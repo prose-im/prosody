@@ -1,4 +1,3 @@
-local t_unpack = table.unpack;
 local time_now = os.time;
 
 local jid_prep = require "prosody.util.jid".prep;
@@ -18,7 +17,7 @@ local _M = {};
 local handlers = {};
 _M.handlers = handlers;
 
-local pubsub_errors = {
+local pubsub_errors = errors.init("pubsub", xmlns_pubsub_errors, {
 	["conflict"] = { "cancel", "conflict" };
 	["invalid-jid"] = { "modify", "bad-request", nil, "invalid-jid" };
 	["jid-required"] = { "modify", "bad-request", nil, "jid-required" };
@@ -33,16 +32,13 @@ local pubsub_errors = {
 	["precondition-not-met"] = { "cancel", "conflict", nil, "precondition-not-met" };
 	["invalid-item"] = { "modify", "bad-request", "invalid item" };
 	["persistent-items-unsupported"] = { "cancel", "feature-not-implemented", nil, "persistent-items" };
-};
-local function pubsub_error_reply(stanza, error)
-	local e = pubsub_errors[error];
-	if not e and errors.is_err(error) then
-		e = { error.type, error.condition, error.text, error.pubsub_condition };
+});
+local function pubsub_error_reply(stanza, error, context)
+	local err = pubsub_errors.wrap(error, context);
+	if error == "precondition-not-met" and type(context) == "table" and type(context.field) == "string" then
+		err.text = "Field does not match: " .. context.field;
 	end
-	local reply = st.error_reply(stanza, t_unpack(e, 1, 3));
-	if e[4] then
-		reply:tag(e[4], { xmlns = xmlns_pubsub_errors }):up();
-	end
+	local reply = st.error_reply(stanza, err);
 	return reply;
 end
 _M.pubsub_error_reply = pubsub_error_reply;
@@ -206,23 +202,28 @@ local node_metadata_form = dataform {
 	};
 	{
 		type = "text-single";
-		name = "pubsub#title";
+		name = "title";
+		var = "pubsub#title";
 	};
 	{
 		type = "text-single";
-		name = "pubsub#description";
+		name = "description";
+		var = "pubsub#description";
 	};
 	{
 		type = "text-single";
-		name = "pubsub#type";
+		name = "payload_type";
+		var = "pubsub#type";
 	};
 	{
 		type = "text-single";
-		name = "pubsub#access_model";
+		name = "access_model";
+		var = "pubsub#access_model";
 	};
 	{
 		type = "text-single";
-		name = "pubsub#publish_model";
+		name = "publish_model";
+		var = "pubsub#publish_model";
 	};
 };
 _M.node_metadata_form = node_metadata_form;
@@ -294,27 +295,14 @@ end
 
 function _M.handle_disco_info_node(event, service)
 	local stanza, reply, node = event.stanza, event.reply, event.node;
-	local ok, ret = service:get_nodes(stanza.attr.from);
+	local ok, meta = service:get_node_metadata(node, stanza.attr.from);
 	if not ok then
-		event.origin.send(pubsub_error_reply(stanza, ret));
-		return true;
-	end
-	local node_obj = ret[node];
-	if not node_obj then
-		event.origin.send(pubsub_error_reply(stanza, "item-not-found"));
+		event.origin.send(pubsub_error_reply(stanza, meta));
 		return true;
 	end
 	event.exists = true;
 	reply:tag("identity", { category = "pubsub", type = "leaf" }):up();
-	if node_obj.config then
-		reply:add_child(node_metadata_form:form({
-			["pubsub#title"] = node_obj.config.title;
-			["pubsub#description"] = node_obj.config.description;
-			["pubsub#type"] = node_obj.config.payload_type;
-			["pubsub#access_model"] = node_obj.config.access_model;
-			["pubsub#publish_model"] = node_obj.config.publish_model;
-		}, "result"));
-	end
+	reply:add_child(node_metadata_form:form(meta, "result"));
 end
 
 function _M.handle_disco_items_node(event, service)
@@ -685,7 +673,7 @@ function handlers.set_publish(origin, stanza, publish, service)
 	if item then
 		item.attr.publisher = service.config.normalize_jid(stanza.attr.from);
 	end
-	local ok, ret = service:publish(node, stanza.attr.from, id, item, required_config);
+	local ok, ret, context = service:publish(node, stanza.attr.from, id, item, required_config);
 	local reply;
 	if ok then
 		if type(ok) == "string" then
@@ -696,7 +684,7 @@ function handlers.set_publish(origin, stanza, publish, service)
 				:tag("publish", { node = node })
 					:tag("item", { id = id });
 	else
-		reply = pubsub_error_reply(stanza, ret);
+		reply = pubsub_error_reply(stanza, ret, context);
 	end
 	origin.send(reply);
 	return true;

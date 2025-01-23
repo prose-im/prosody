@@ -25,6 +25,8 @@ local _G = _G;
 local prosody = _G.prosody;
 
 local unpack = table.unpack;
+local cache = require "prosody.util.cache";
+local new_short_id = require "prosody.util.id".short;
 local iterators = require "prosody.util.iterators";
 local keys, values = iterators.keys, iterators.values;
 local jid_bare, jid_split, jid_join, jid_resource, jid_compare = import("prosody.util.jid", "bare", "prepped_split", "join", "resource", "compare");
@@ -170,6 +172,47 @@ local function send_repl_output(session, line, attr)
 	return session.send(st.stanza("repl-output", attr):text(tostring(line)));
 end
 
+local function request_repl_input(session, input_type)
+	if input_type ~= "password" then
+		return promise.reject("internal error - unsupported input type "..tostring(input_type));
+	end
+	local pending_inputs = session.pending_inputs;
+	if not pending_inputs then
+		pending_inputs = cache.new(5, function (input_id, input_promise) --luacheck: ignore 212/input_id
+			input_promise.reject();
+		end);
+		session.pending_inputs = pending_inputs;
+	end
+
+	local input_id = new_short_id();
+	local p = promise.new(function (resolve, reject)
+		pending_inputs:set(input_id, { resolve = resolve, reject = reject });
+	end):finally(function ()
+		pending_inputs:set(input_id, nil);
+	end);
+	session.send(st.stanza("repl-request-input", { type = input_type, id = input_id }));
+	return p;
+end
+
+module:hook("admin-disconnected", function (event)
+	local pending_inputs = event.session.pending_inputs;
+	if not pending_inputs then return; end
+	for input_promise in pending_inputs:values() do
+		input_promise.reject();
+	end
+end);
+
+module:hook("admin/repl-requested-input", function (event)
+	local input_id = event.stanza.attr.id;
+	local input_promise = event.origin.pending_inputs:get(input_id);
+	if not input_promise then
+		event.origin.send(st.stanza("repl-result", { type = "error" }):text("Internal error - unexpected input"));
+		return true;
+	end
+	input_promise.resolve(event.stanza:get_text());
+	return true;
+end);
+
 function console:new_session(admin_session)
 	local session = {
 		send = function (t)
@@ -184,6 +227,9 @@ function console:new_session(admin_session)
 		end;
 		write = function (t)
 			return send_repl_output(admin_session, t, { eol = "0" });
+		end;
+		request_input = function (input_type)
+			return request_repl_input(admin_session, input_type);
 		end;
 		serialize = tostring;
 		disconnect = function () admin_session:close(); end;
@@ -266,25 +312,33 @@ local function handle_line(event)
 		end
 	end
 
+	local function send_result(taskok, message)
+		if not message then
+			if type(taskok) ~= "string" and useglobalenv then
+				taskok = session.serialize(taskok);
+			end
+			result:text("Result: "..tostring(taskok));
+		elseif (not taskok) and message then
+			result.attr.type = "error";
+			result:text("Error: "..tostring(message));
+		else
+			result:text("OK: "..tostring(message));
+		end
+
+		event.origin.send(result);
+	end
+
 	local taskok, message = chunk();
 
 	if promise.is_promise(taskok) then
-		taskok, message = async.wait_for(taskok);
-	end
-
-	if not message then
-		if type(taskok) ~= "string" and useglobalenv then
-			taskok = session.serialize(taskok);
-		end
-		result:text("Result: "..tostring(taskok));
-	elseif (not taskok) and message then
-		result.attr.type = "error";
-		result:text("Error: "..tostring(message));
+		taskok:next(function (resolved_message)
+			send_result(true, resolved_message);
+		end, function (rejected_message)
+			send_result(nil, rejected_message);
+		end);
 	else
-		result:text("OK: "..tostring(message));
+		send_result(taskok, message);
 	end
-
-	event.origin.send(result);
 end
 
 module:hook("admin/repl-input", function (event)
@@ -631,6 +685,7 @@ describe_command [[module:load(module, host) - Load the specified module on the 
 function def_env.module:load(name, hosts)
 	hosts = get_hosts_with_module(hosts);
 
+	local already_loaded = set.new();
 	-- Load the module for each host
 	local ok, err, count, mod = true, nil, 0;
 	for host in hosts do
@@ -655,10 +710,18 @@ function def_env.module:load(name, hosts)
 					self.session.print("Note: Module will not be loaded after restart unless enabled in configuration");
 				end
 			end
+		else
+			already_loaded:add(host);
 		end
 	end
 
-	return ok, (ok and "Module loaded onto "..count.." host"..(count ~= 1 and "s" or "")) or ("Last error: "..tostring(err));
+	if not ok then
+		return ok, "Last error: "..tostring(err);
+	end
+	if already_loaded == hosts then
+		return ok, "Module already loaded";
+	end
+	return ok, "Module loaded onto "..count.." host"..(count ~= 1 and "s" or "");
 end
 
 describe_command [[module:unload(module, host) - The same, but just unloads the module from memory]]
@@ -1661,12 +1724,13 @@ function def_env.user:create(jid, password, role)
 		role = module:get_option_string("default_provisioned_role", "prosody:member");
 	end
 
-	local ok, err = um.create_user_with_role(username, password, host, role);
-	if not ok then
-		return nil, "Could not create user: "..err;
-	end
-
-	return true, ("Created %s with role '%s'"):format(jid, role);
+	return promise.resolve(password or self.session.request_input("password")):next(function (password_)
+		local ok, err = um.create_user_with_role(username, password_, host, role);
+		if not ok then
+			return promise.reject("Could not create user: "..err);
+		end
+		return ("Created %s with role '%s'"):format(jid, role);
+	end);
 end
 
 describe_command [[user:disable(jid) - Disable the specified user account, preventing login]]
@@ -1725,12 +1789,15 @@ function def_env.user:password(jid, password)
 	elseif not um.user_exists(username, host) then
 		return nil, "No such user";
 	end
-	local ok, err = um.set_password(username, password, host, nil);
-	if ok then
-		return true, "User password changed";
-	else
-		return nil, "Could not change password for user: "..err;
-	end
+
+	return promise.resolve(password or self.session.request_input("password")):next(function (password_)
+		local ok, err = um.set_password(username, password_, host, nil);
+		if ok then
+			return "User password changed";
+		else
+			return promise.reject("Could not change password for user: "..err);
+		end
+	end);
 end
 
 describe_command [[user:roles(jid, host) - Show current roles for an user]]
@@ -1770,7 +1837,11 @@ function def_env.user:setrole(jid, host, new_role)
 	elseif prosody.hosts[userhost] and not um.user_exists(username, userhost) then
 		return nil, "No such user";
 	end
-	return um.set_user_role(username, host, new_role);
+	if userhost == host then
+		return um.set_user_role(username, userhost, new_role);
+	else
+		return um.set_jid_role(jid, host, new_role);
+	end
 end
 
 describe_command [[user:addrole(jid, host, role) - Add a secondary role to a user]]
@@ -1781,6 +1852,8 @@ function def_env.user:addrole(jid, host, new_role)
 		return nil, "No such host: "..host;
 	elseif prosody.hosts[userhost] and not um.user_exists(username, userhost) then
 		return nil, "No such user";
+	elseif userhost ~= host then
+		return nil, "Can't add roles outside users own host"
 	end
 	return um.add_user_secondary_role(username, host, new_role);
 end
@@ -1793,6 +1866,8 @@ function def_env.user:delrole(jid, host, role_name)
 		return nil, "No such host: "..host;
 	elseif prosody.hosts[userhost] and not um.user_exists(username, userhost) then
 		return nil, "No such user";
+	elseif userhost ~= host then
+		return nil, "Can't remove roles outside users own host"
 	end
 	return um.remove_user_secondary_role(username, host, role_name);
 end
@@ -2414,12 +2489,15 @@ describe_command [[stats:show(pattern) - Show internal statistics, optionally fi
 -- Undocumented currently, you can append :histogram() or :cfgraph() to stats:show() for rendered graphs.
 function def_env.stats:show(name_filter)
 	local statsman = require "prosody.core.statsmanager"
+	local metric_registry = statsman.get_metric_registry();
+	if not metric_registry then
+		return nil, [[Statistics disabled. Try `statistics = "internal"` in the global section of the config file and restart.]];
+	end
 	local collect = statsman.collect
 	if collect then
 		-- force collection if in manual mode
 		collect()
 	end
-	local metric_registry = statsman.get_metric_registry();
 	local displayed_stats = new_stats_context(self);
 	for family_name, metric_family in iterators.sorted_pairs(metric_registry:get_metric_families()) do
 		if not name_filter or family_name:match(name_filter) then
@@ -2464,7 +2542,7 @@ local host_commands = {};
 local function new_item_handlers(command_host)
 	local function on_command_added(event)
 		local command = event.item;
-		local mod_name = command._provided_by and ("mod_"..command._provided_by) or "<unknown module>";
+		local mod_name = event.source and ("mod_"..event.source.name) or "<unknown module>";
 		if not schema.validate(command_metadata_schema, command) or type(command.handler) ~= "function" then
 			module:log("warn", "Ignoring command added by %s: missing or invalid data", mod_name);
 			return;
@@ -2551,7 +2629,7 @@ local function new_item_handlers(command_host)
 			module = command._provided_by;
 		};
 
-		module:log("debug", "Shell command added by mod_%s: %s:%s()", mod_name, command.section, command.name);
+		module:log("debug", "Shell command added by %s: %s:%s()", mod_name, command.section, command.name);
 	end
 
 	local function on_command_removed(event)

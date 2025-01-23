@@ -1,6 +1,5 @@
 local events = require "prosody.util.events";
 local cache = require "prosody.util.cache";
-local errors = require "prosody.util.error";
 
 local service_mt = {};
 
@@ -12,6 +11,7 @@ local default_config = {
 	itemcheck = function () return true; end;
 	get_affiliation = function () end;
 	normalize_jid = function (jid) return jid; end;
+	metadata_subset = {};
 	capabilities = {
 		outcast = {
 			create = false;
@@ -46,6 +46,7 @@ local default_config = {
 			get_subscription = true;
 			get_subscriptions = true;
 			get_items = false;
+			get_metadata = true;
 
 			subscribe_other = false;
 			unsubscribe_other = false;
@@ -68,6 +69,7 @@ local default_config = {
 			get_subscription = true;
 			get_subscriptions = true;
 			get_items = true;
+			get_metadata = true;
 
 			subscribe_other = false;
 			unsubscribe_other = false;
@@ -91,6 +93,7 @@ local default_config = {
 			get_subscription = true;
 			get_subscriptions = true;
 			get_items = true;
+			get_metadata = true;
 
 			subscribe_other = false;
 			unsubscribe_other = false;
@@ -116,6 +119,7 @@ local default_config = {
 			get_subscription = true;
 			get_subscriptions = true;
 			get_items = true;
+			get_metadata = true;
 
 
 			subscribe_other = true;
@@ -562,11 +566,7 @@ function service:publish(node, actor, id, item, requested_config) --> ok, err
 		-- Check that node has the requested config before we publish
 		local ok, field = check_preconditions(node_obj.config, requested_config);
 		if not ok then
-			local err = errors.new({
-				type = "cancel", condition = "conflict", text = "Field does not match: "..field;
-			});
-			err.pubsub_condition = "precondition-not-met";
-			return false, err;
+			return false, "precondition-not-met", { field = field };
 		end
 	end
 	if not self.config.itemcheck(item) then
@@ -875,6 +875,20 @@ function service:get_node_config(node, actor) --> (true, config) or (false, err)
 	end
 
 	return true, config_table;
+end
+
+function service:get_node_metadata(node, actor)
+	if not self:may(node, actor, "get_metadata") then
+		return false, "forbidden";
+	end
+
+	local ok, config = self:get_node_config(node, true);
+	if not ok then return ok, config; end
+	local meta = {};
+	for _, k in ipairs(self.config.metadata_subset) do
+		meta[k] = config[k];
+	end
+	return true, meta;
 end
 
 return {

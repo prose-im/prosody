@@ -184,8 +184,11 @@ module:hook("host-disco-items", function (event)
 	if not ok then
 		return;
 	end
-	for node, node_obj in pairs(ret) do
-		reply:tag("item", { jid = module.host, node = node, name = node_obj.config.title }):up();
+	for node in pairs(ret) do
+		local ok, meta = service:get_node_metadata(node, stanza.attr.from);
+		if ok then
+			reply:tag("item", { jid = module.host, node = node, name = meta.title }):up();
+		end
 	end
 end);
 
@@ -205,7 +208,7 @@ local function get_affiliation(jid, _, action)
 		-- Only one affiliation is allowed to create nodes by default
 		return "owner";
 	end
-	if module:may(":service-admin", bare_jid) then
+	if module:could(":service-admin", bare_jid) then
 		return admin_aff;
 	end
 end
@@ -256,6 +259,13 @@ function module.load()
 		broadcaster = simple_broadcast;
 		itemcheck = is_item_stanza;
 		check_node_config = check_node_config;
+		metadata_subset = {
+			"title";
+			"description";
+			"payload_type";
+			"access_model";
+			"publish_model";
+		};
 		get_affiliation = get_affiliation;
 
 		jid = module.host;
@@ -267,41 +277,4 @@ local function get_service(service_jid)
 	return assert(assert(prosody.hosts[service_jid], "Unknown pubsub service").modules.pubsub, "Not a pubsub service").service;
 end
 
-module:add_item("shell-command", {
-	section = "pubsub";
-	section_desc = "Manage publish/subscribe nodes";
-	name = "create_node";
-	desc = "Create a node with the specified name";
-	args = {
-		{ name = "service_jid", type = "string" };
-		{ name = "node_name",   type = "string" };
-	};
-	host_selector = "service_jid";
-
-	handler = function (self, service_jid, node_name) --luacheck: ignore 212/self
-		return get_service(service_jid):create(node_name, true);
-	end;
-});
-
-module:add_item("shell-command", {
-	section = "pubsub";
-	section_desc = "Manage publish/subscribe nodes";
-	name = "list_nodes";
-	desc = "List nodes on a pubsub service";
-	args = {
-		{ name = "service_jid", type = "string" };
-	};
-	host_selector = "service_jid";
-
-	handler = function (self, service_jid) --luacheck: ignore 212/self
-		-- luacheck: ignore 431/service
-		local service = get_service(service_jid);
-		local nodes = select(2, assert(service:get_nodes(true)));
-		local count = 0;
-		for node_name in pairs(nodes) do
-			count = count + 1;
-			self.session.print(node_name);
-		end
-		return true, ("%d nodes"):format(count);
-	end;
-});
+module:require("commands").add_commands(get_service);

@@ -1,4 +1,5 @@
 local config = require "prosody.core.configmanager";
+local human_io = require "prosody.util.human.io";
 local server = require "prosody.net.server";
 local st = require "prosody.util.stanza";
 local path = require "prosody.util.paths";
@@ -129,6 +130,21 @@ local function start(arg) --luacheck: ignore 212/arg
 		print("--- session closed ---");
 		os.exit(0, true);
 	end);
+
+	client.events.add_handler("received", function (stanza)
+		if stanza.name ~= "repl-request-input" then
+			return;
+		end
+		if stanza.attr.type == "password" then
+			local password = human_io.read_password();
+			client.send(st.stanza("repl-requested-input", { type = stanza.attr.type, id = stanza.attr.id }):text(password));
+		else
+			io.stderr:write("Internal error - unexpected input request type "..tostring(stanza.attr.type).."\n");
+			os.exit(1);
+		end
+		return true;
+	end, 2);
+
 
 	client.events.add_handler("received", function (stanza)
 		if stanza.name == "repl-output" or stanza.name == "repl-result" then

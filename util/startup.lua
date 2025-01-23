@@ -266,8 +266,13 @@ function startup.init_global_state()
 	full_sessions = prosody.full_sessions;
 	hosts = prosody.hosts;
 
-	prosody.paths = { source = CFG_SOURCEDIR, config = CFG_CONFIGDIR or ".",
-	                  plugins = CFG_PLUGINDIR or "plugins", data = "data" };
+	prosody.paths = {
+		source = CFG_SOURCEDIR;
+		config = CFG_CONFIGDIR or ".";
+		plugins = CFG_PLUGINDIR or "plugins";
+		data = "data";
+		credentials = os.getenv("CREDENTIALS_DIRECTORY");
+	};
 
 	prosody.arg = _G.arg;
 
@@ -534,7 +539,7 @@ end
 local function check_posix()
 	if prosody.platform ~= "posix" then return end
 
-	local want_pposix_version = "0.4.0";
+	local want_pposix_version = "0.4.1";
 	local have_pposix, pposix = pcall(require, "prosody.util.pposix");
 
 	if pposix._VERSION ~= want_pposix_version then

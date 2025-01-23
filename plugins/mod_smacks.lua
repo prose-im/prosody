@@ -541,11 +541,17 @@ module:hook("pre-resource-unbind", function (event)
 			return
 		end
 
-		session.log("debug", "Destroying session for hibernating too long");
-		save_old_session(session);
-		session.resumption_token = nil;
-		sessionmanager.destroy_session(session, "Hibernating too long");
-		sessions_expired(1);
+		session.thread:run({
+			event = "callback";
+			name = "mod_smacks/destroy_hibernating";
+			callback = function ()
+				session.log("debug", "Destroying session for hibernating too long");
+				save_old_session(session);
+				session.resumption_token = nil;
+				sessionmanager.destroy_session(session, "Hibernating too long");
+				sessions_expired(1);
+			end;
+		});
 	end);
 	if session.conn then
 		local conn = session.conn;
@@ -585,6 +591,11 @@ function do_resume(session, stanza)
 
 	local id = stanza.attr.previd;
 	local original_session = session_registry[registry_key(session, id)];
+	if original_session and original_session.destroyed then
+		original_session.log("error", "Tried to resume a destroyed session. This should not happen! %s", debug.traceback());
+		session_registry[registry_key(session, id)] = nil;
+		original_session = nil;
+	end
 	if not original_session then
 		local old_session = old_session_registry:get(session.username, id);
 		if old_session then

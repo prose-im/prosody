@@ -8,7 +8,7 @@ local roles = require "prosody.util.roles";
 local config_global_admin_jids = module:context("*"):get_option_set("admins", {}) / normalize;
 local config_admin_jids = module:get_option_inherited_set("admins", {}) / normalize;
 local host = module.host;
-local host_suffix = host:gsub("^[^%.]+%.", "");
+local host_suffix = module:get_option_string("parent_host", (host:gsub("^[^%.]+%.", "")));
 
 local hosts = prosody.hosts;
 local is_anon_host = module:get_option_string("authentication") == "anonymous";
@@ -18,8 +18,8 @@ local is_component = hosts[host].type == "component";
 local host_user_role, server_user_role, public_user_role;
 if is_component then
 	host_user_role = module:get_option_string("host_user_role", "prosody:registered");
-	server_user_role = module:get_option_string("server_user_role");
-	public_user_role = module:get_option_string("public_user_role");
+	server_user_role = module:get_option_string("server_user_role", "prosody:guest");
+	public_user_role = module:get_option_string("public_user_role", "prosody:guest");
 end
 
 local role_store = module:open_store("account_roles");
@@ -265,7 +265,7 @@ function get_jid_role(jid)
 end
 
 function set_jid_role(jid, role_name) -- luacheck: ignore 212
-	return false;
+	return false, "not-implemented";
 end
 
 function get_jids_with_role(role_name)

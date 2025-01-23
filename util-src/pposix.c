@@ -13,7 +13,7 @@
 * POSIX support functions for Lua
 */
 
-#define MODULE_VERSION "0.4.0"
+#define MODULE_VERSION "0.4.1"
 
 
 #if defined(__linux__)
@@ -654,6 +654,77 @@ static int lc_abort(lua_State *L) {
 	return 0;
 }
 
+const char *pipe_flag_names[] = {
+	"cloexec",
+	"direct",
+	"nonblock"
+};
+const int pipe_flag_values[] = {
+	O_CLOEXEC,
+	O_DIRECT,
+	O_NONBLOCK
+};
+
+
+static int lc_pipe(lua_State *L) {
+	int fds[2];
+	int nflags = lua_gettop(L);
+
+#if defined(__linux__)
+	int flags=0;
+	for(int i = 1; i<=nflags; i++) {
+		int flag_index = luaL_checkoption(L, i, NULL, pipe_flag_names);
+		flags |= pipe_flag_values[flag_index];
+	}
+
+	if(pipe2(fds, flags) == -1) {
+#else
+	if(nflags != 0) {
+		luaL_argerror(L, 1, "Flags are not supported on this platform");
+	}
+	if(pipe(fds) == -1) {
+#endif
+		luaL_pushfail(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+
+	lua_pushinteger(L, fds[0]);
+	lua_pushinteger(L, fds[1]);
+	return 2;
+}
+
+/* This helper function is adapted from Lua 5.3's liolib.c */
+static int stdio_fclose (lua_State *L) {
+	int res = -1;
+	luaL_Stream *p = ((luaL_Stream *)luaL_checkudata(L, 1, LUA_FILEHANDLE));
+	if (p->f == NULL) {
+		return 0;
+	}
+	res = fclose(p->f);
+	p->f = NULL;
+	return luaL_fileresult(L, (res == 0), NULL);
+}
+
+static int lc_fdopen(lua_State *L) {
+	int fd = luaL_checkinteger(L, 1);
+	const char *mode = luaL_checkstring(L, 2);
+
+	luaL_Stream *file = (luaL_Stream *)lua_newuserdata(L, sizeof(luaL_Stream));
+	file->closef = stdio_fclose;
+	file->f = fdopen(fd, mode);
+
+	if (!file->f) {
+		luaL_pushfail(L);
+		lua_pushstring(L, strerror(errno));
+		return 2;
+	}
+
+	luaL_getmetatable(L, LUA_FILEHANDLE);
+	lua_setmetatable(L, -2);
+	return 1;
+}
+
 static int lc_uname(lua_State *L) {
 	struct utsname uname_info;
 
@@ -869,6 +940,9 @@ int luaopen_prosody_util_pposix(lua_State *L) {
 		{ "umask", lc_umask },
 
 		{ "mkdir", lc_mkdir },
+
+		{ "pipe", lc_pipe },
+		{ "fdopen", lc_fdopen },
 
 		{ "setrlimit", lc_setrlimit },
 		{ "getrlimit", lc_getrlimit },

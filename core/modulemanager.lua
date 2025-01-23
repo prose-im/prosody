@@ -26,7 +26,7 @@ local xpcall = require "prosody.util.xpcall".xpcall;
 local debug_traceback = debug.traceback;
 local setmetatable, rawget = setmetatable, rawget;
 local ipairs, pairs, type, t_insert = ipairs, pairs, type, table.insert;
-local lua_version = _VERSION:match("5%.%d$");
+local lua_version = _VERSION:match("5%.%d+$");
 
 local autoload_modules = {
 	prosody.platform,
@@ -63,6 +63,20 @@ local loader = pluginloader.init({
 			if key then
 				value = value:gsub("%s+$", "");
 				metadata[key] = value;
+			end
+		end
+
+		if metadata.lua then
+			local supported = false;
+			for supported_lua_version in metadata.lua:gmatch("[^, ]+") do
+				if supported_lua_version == lua_version then
+					supported = true;
+					break;
+				end
+			end
+			if not supported then
+				log("warn", "Not loading module, we have Lua %s but the module requires one of (%s): %s", lua_version, metadata.lua, path);
+				return; -- Don't load this module
 			end
 		end
 

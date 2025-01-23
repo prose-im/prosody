@@ -161,15 +161,44 @@ do
 		end;
 	};
 
+	-- For reading config values out of files.
+	local function filereader(basepath, defaultmode)
+		return function(filename, mode)
+			local f, err = io.open(resolve_relative_path(basepath, filename));
+			if not f then error(err, 2); end
+			local content, err = f:read(mode or defaultmode);
+			f:close();
+			if not content then error(err, 2); end
+			return content;
+		end
+	end
+
+	-- Collect lines into an array
+	local function linereader(basepath)
+		return function(filename)
+			local ret = {};
+			for line in io.lines(resolve_relative_path(basepath, filename)) do
+				t_insert(ret, line);
+			end
+			return ret;
+		end
+	end
+
 	parser = {};
 	function parser.load(data, config_file, config_table)
 		local set_options = {}; -- set_options[host.."/"..option_name] = true (when the option has been set already in this file)
 		local warnings = {};
 		local env;
+		local config_path = config_file:gsub("[^"..path_sep.."]+$", "");
+
 		-- The ' = true' are needed so as not to set off __newindex when we assign the functions below
 		env = setmetatable({
 			Host = true, host = true, VirtualHost = true,
 			Component = true, component = true,
+			FileContents = true,
+			FileLine = true,
+			FileLines = true,
+			Credential = true,
 			Include = true, include = true, RunScript = true }, {
 				__index = function (_, k)
 					if k:match("^ENV_") then
@@ -293,7 +322,6 @@ do
 				end
 				local path_pos, glob = file:match("()([^"..path_sep.."]+)$");
 				local path = file:sub(1, math_max(path_pos-2,0));
-				local config_path = config_file:gsub("[^"..path_sep.."]+$", "");
 				if #path > 0 then
 					path = resolve_relative_path(config_path, path);
 				else
@@ -308,7 +336,7 @@ do
 				return;
 			end
 			-- Not a wildcard, so resolve (potentially) relative path and run through config parser
-			file = resolve_relative_path(config_file:gsub("[^"..path_sep.."]+$", ""), file);
+			file = resolve_relative_path(config_path, file);
 			local f, err = io.open(file);
 			if f then
 				local ret, err = parser.load(f:read("*a"), file, config_table);
@@ -325,7 +353,24 @@ do
 		env.include = env.Include;
 
 		function env.RunScript(file)
-			return dofile(resolve_relative_path(config_file:gsub("[^"..path_sep.."]+$", ""), file));
+			return dofile(resolve_relative_path(config_path, file));
+		end
+
+		env.FileContents = filereader(config_path, "*a");
+		env.FileLine = filereader(config_path, "*l");
+		env.FileLines = linereader(config_path);
+
+		if _G.prosody.paths.credentials then
+			env.Credential = filereader(_G.prosody.paths.credentials, "*a");
+		elseif _G.prosody.process_type == "prosody" then
+			env.Credential = function() error("Credential() requires the $CREDENTIALS_DIRECTORY environment variable to be set", 2) end
+		else
+			env.Credential = function()
+				t_insert(warnings, ("%s:%d: Credential() requires the $CREDENTIALS_DIRECTORY environment variable to be set")
+						:format(config_file, get_line_number(config_file)));
+				return nil;
+			end
+
 		end
 
 		local chunk, err = envload(data, "@"..config_file, env);

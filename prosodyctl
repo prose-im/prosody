@@ -78,8 +78,6 @@ local read_password = human_io.read_password;
 local call_luarocks = prosodyctl.call_luarocks;
 local error_messages = prosodyctl.error_messages;
 
-local jid_split = require "prosody.util.jid".prepped_split;
-
 local prosodyctl_timeout = (configmanager.get("*", "prosodyctl_timeout") or 5) * 2;
 -----------------------
 local commands = {};
@@ -146,38 +144,9 @@ function commands.adduser(arg)
 		show_usage([[adduser JID]], [[Create the specified user account in Prosody]]);
 		return opts.help and 0 or 1;
 	end
-	local user, host = jid_split(arg[1]);
-	if not user and host then
-		show_message [[Failed to understand JID, please supply the JID you want to create]]
-		show_usage [[adduser user@host]]
-		return 1;
-	end
 
-	if not host then
-		show_message [[Please specify a JID, including a host. e.g. alice@example.com]];
-		return 1;
-	end
-
-	if not prosody.hosts[host] then
-		show_warning("The host '%s' is not listed in the configuration file (or is not enabled).", host)
-		show_warning("The user will not be able to log in until this is changed.");
-		prosody.hosts[host] = startup.make_host(host); --luacheck: ignore 122
-	end
-
-	if prosodyctl.user_exists{ user = user, host = host } then
-		show_message [[That user already exists]];
-		return 1;
-	end
-
-	local password = read_password();
-	if not password then return 1; end
-
-	local ok, msg = prosodyctl.adduser { user = user, host = host, password = password };
-
-	if ok then return 0; end
-
-	show_message(error_messages[msg])
-	return 1;
+	local shell = require "prosody.util.prosodyctl.shell";
+	return shell.shell({ ("user:create(%q, nil, %q)"):format(arg[1], "prosody:member") });
 end
 
 function commands.passwd(arg)
@@ -186,38 +155,9 @@ function commands.passwd(arg)
 		show_usage([[passwd JID]], [[Set the password for the specified user account in Prosody]]);
 		return opts.help and 0 or 1;
 	end
-	local user, host = jid_split(arg[1]);
-	if not user and host then
-		show_message [[Failed to understand JID, please supply the JID you want to set the password for]]
-		show_usage [[passwd user@host]]
-		return 1;
-	end
 
-	if not host then
-		show_message [[Please specify a JID, including a host. e.g. alice@example.com]];
-		return 1;
-	end
-
-	if not prosody.hosts[host] then
-		show_warning("The host '%s' is not listed in the configuration file (or is not enabled).", host)
-		show_warning("The user will not be able to log in until this is changed.");
-		prosody.hosts[host] = startup.make_host(host); --luacheck: ignore 122
-	end
-
-	if not prosodyctl.user_exists { user = user, host = host } then
-		show_message [[That user does not exist, use prosodyctl adduser to create a new user]]
-		return 1;
-	end
-
-	local password = read_password();
-	if not password then return 1; end
-
-	local ok, msg = prosodyctl.passwd { user = user, host = host, password = password };
-
-	if ok then return 0; end
-
-	show_message(error_messages[msg])
-	return 1;
+	local shell = require "prosody.util.prosodyctl.shell";
+	return shell.shell({ ("user:password(%q, nil)"):format(arg[1]) });
 end
 
 function commands.deluser(arg)
@@ -226,34 +166,9 @@ function commands.deluser(arg)
 		show_usage([[deluser JID]], [[Permanently remove the specified user account from Prosody]]);
 		return opts.help and 0 or 1;
 	end
-	local user, host = jid_split(arg[1]);
-	if not user and host then
-		show_message [[Failed to understand JID, please supply the JID to the user account you want to delete]]
-		show_usage [[deluser user@host]]
-		return 1;
-	end
 
-	if not host then
-		show_message [[Please specify a JID, including a host. e.g. alice@example.com]];
-		return 1;
-	end
-
-	if not prosody.hosts[host] then
-		show_warning("The host '%s' is not listed in the configuration file (or is not enabled).", host)
-		prosody.hosts[host] = startup.make_host(host); --luacheck: ignore 122
-	end
-
-	if not prosodyctl.user_exists { user = user, host = host } then
-		show_message [[That user does not exist on this server]]
-		return 1;
-	end
-
-	local ok, msg = prosodyctl.deluser { user = user, host = host };
-
-	if ok then return 0; end
-
-	show_message(error_messages[msg])
-	return 1;
+	local shell = require "prosody.util.prosodyctl.shell";
+	return shell.shell({ ("user:delete(%q)"):format(arg[1]) });
 end
 
 local function has_init_system() --> which
@@ -558,6 +473,28 @@ function commands.about(arg)
 	print("");
 end
 
+function commands.version(arg)
+	local flags = { short_params = { h = "help"; ["?"] = "help", v = "verbose" } };
+	local opts = parse_args(arg, flags);
+	if opts.help then
+		show_usage("version [-v]", [[Show current Prosody version, or more]]);
+		return 0;
+	elseif opts.verbose then
+		return commands.about(arg);
+	end
+
+	print("Prosody "..(prosody.version or "(unknown version)"));
+end
+
+function commands.lua_paths()
+	local function shell_escape(s)
+		return "'" .. tostring(s):gsub("'",[['\'']]) .. "'";
+	end
+
+	print("LUA_PATH="..shell_escape(package.path));
+	print("LUA_CPATH="..shell_escape(package.cpath));
+end
+
 function commands.reload(arg)
 	local opts = parse_args(arg, only_help);
 	if opts.help then
@@ -703,7 +640,7 @@ local command_runner = async.runner(function ()
 
 	if not commands[command] then -- Show help for all commands
 		function show_usage(usage, desc)
-			print(string.format(" %-11s    %s", usage, desc));
+			print(string.format(" %-14s    %s", usage, desc));
 		end
 
 		print("prosodyctl - Manage a Prosody server");
@@ -712,7 +649,7 @@ local command_runner = async.runner(function ()
 		print("");
 		print("Where COMMAND may be one of:");
 
-		local hidden_commands = require "prosody.util.set".new{ "register", "unregister" };
+		local hidden_commands = require "prosody.util.set".new{ "register", "unregister", "lua_paths" };
 		local commands_order = {
 			"Process management:",
 				"start"; "stop"; "restart"; "reload"; "status";
@@ -722,8 +659,8 @@ local command_runner = async.runner(function ()
 			"Plugin management:",
 				"install"; "remove"; "list";
 			"Informative:",
-				"about",
 				"check",
+				"version",
 			"Other:",
 				"cert",
 		};

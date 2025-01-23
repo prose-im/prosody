@@ -62,9 +62,9 @@ files["plugins/"] = {
 		"module.broadcast",
 		"module.context",
 		"module.could",
-		"module.depends",
 		"module.default_permission",
 		"module.default_permissions",
+		"module.depends",
 		"module.fire_event",
 		"module.get_directory",
 		"module.get_host",
@@ -116,6 +116,7 @@ files["plugins/"] = {
 	};
 	globals = {
 		-- Methods that can be set on module API
+		"module.ready",
 		"module.unload",
 		"module.add_host",
 		"module.load",
@@ -140,6 +141,10 @@ files["prosody.cfg.lua"] = {
 		"component",
 		"Include",
 		"include",
+		"FileContents",
+		"FileLine",
+		"FileLines",
+		"Credential",
 		"RunScript"
 	};
 }

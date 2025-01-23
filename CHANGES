@@ -6,6 +6,7 @@ TRUNK
 ### Administration
 
 - Add 'watch log' command to follow live debug logs at runtime (even if disabled)
+- mod_announce: Add shell commands to send messages to all users, online users, or limited by roles
 
 ### Networking
 
@@ -59,6 +60,7 @@ TRUNK
 
 - The configuration file now supports referring and appending to options previously set
 - Direct usage of the Lua API in the config file is deprecated, but can now be accessed via Lua.* instead
+- Convenience functions for reading values from files, with variant meant for credentials or secrets
 
 ## Changes
 
@@ -73,6 +75,7 @@ TRUNK
 - Support for Type=notify and notify-reload systemd service type added
 - Support for the roster *group* access_model in mod_pep
 - Support for systemd socket activation in server_epoll
+- mod_invites_adhoc gained a command for creating password resets
 
 ## Removed
 
