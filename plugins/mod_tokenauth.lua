@@ -151,7 +151,7 @@ local function _get_validated_grant_info(username, grant)
 	local account_info = usermanager.get_account_info(username, module.host);
 	local password_updated_at = account_info and account_info.password_updated;
 	local now = os.time();
-	if password_updated_at and grant.created <= password_updated_at then
+	if password_updated_at and grant.created < password_updated_at then
 		module:log("debug", "Token grant %s of %s issued before last password change, invalidating it now", grant.id, username);
 		token_store:set_key(username, grant.id, nil);
 		return nil, "not-authorized";
