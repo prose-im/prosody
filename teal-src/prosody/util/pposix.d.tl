@@ -86,6 +86,14 @@ local record pposix
 
 	mkdir : function (dir : string) : boolean, string
 
+	enum pipe_flag_names
+		"cloexec"
+		"direct"
+		"nonblock"
+	end
+	pipe : function (... : pipe_flag_names) : integer, integer
+	fdopen : function (integer, string) : FILE, string
+
 	setrlimit : function (resource : ulimit_resource, soft : ulimit_limit, hard : ulimit_limit) : boolean, string
 	getrlimit : function (resource : ulimit_resource) : boolean, ulimit_limit, ulimit_limit
 	getrlimit : function (resource : ulimit_resource) : boolean, string
@@ -103,7 +111,7 @@ local record pposix
 
 	ENOENT : integer
 	_NAME : string
-	_VESRION : string
+	_VERSION : string
 end
 
 return pposix

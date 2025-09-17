@@ -11,6 +11,7 @@ local jid_split = require "prosody.util.jid".prepped_split;
 local modulemanager = require "prosody.core.modulemanager";
 local async = require "prosody.util.async";
 local httputil = require "prosody.util.http";
+local human_units = require "prosody.util.human.units";
 
 local function api(host)
 	return setmetatable({ name = "prosodyctl.check"; host = host; log = prosody.log }, { __index = moduleapi })
@@ -325,7 +326,12 @@ local function check(arg)
 	local ok = true;
 	local function contains_match(hayset, needle) for member in hayset do if member:find(needle) then return true end end end
 	local function disabled_hosts(host, conf) return host ~= "*" and conf.enabled ~= false; end
-	local function enabled_hosts() return it.filter(disabled_hosts, pairs(configmanager.getconfig())); end
+	local function is_user_host(host, conf) return host ~= "*" and conf.component_module == nil; end
+	local function is_component_host(host, conf) return host ~= "*" and conf.component_module ~= nil; end
+	local function enabled_hosts() return it.filter(disabled_hosts, it.sorted_pairs(configmanager.getconfig())); end
+	local function enabled_user_hosts() return it.filter(is_user_host, it.sorted_pairs(configmanager.getconfig())); end
+	local function enabled_components() return it.filter(is_component_host, it.sorted_pairs(configmanager.getconfig())); end
+
 	local checks = {};
 	function checks.disabled()
 		local disabled_hosts_set = set.new();
@@ -632,6 +638,37 @@ local function check(arg)
 			print("    Both mod_pep_simple and mod_pep are enabled but they conflict");
 			print("    with each other. Remove one.");
 		end
+		if all_modules:contains("posix") then
+			print("");
+			print("    mod_posix is loaded in your configuration file, but it has");
+			print("    been deprecated. You can safely remove it.");
+		end
+		if all_modules:contains("admin_telnet") then
+			print("");
+			print("    mod_admin_telnet is being replaced by mod_admin_shell (prosodyctl shell).");
+			print("    To update and ensure all commands are available, simply change \"admin_telnet\" to \"admin_shell\"");
+			print("    in your modules_enabled list.");
+		end
+
+		local load_failures = {};
+		for mod_name in all_modules do
+			local mod, err = modulemanager.loader:load_resource(mod_name, nil);
+			if not mod then
+				load_failures[mod_name] = err;
+			end
+		end
+
+		if next(load_failures) ~= nil then
+			print("");
+			print("    The following modules failed to load:");
+			print("");
+			for mod_name, err in it.sorted_pairs(load_failures) do
+				print(("        mod_%s: %s"):format(mod_name, err));
+			end
+			print("")
+			print("    Check for typos and remove any obsolete/incompatible modules from your config.");
+		end
+
 		for host, host_config in pairs(config) do --luacheck: ignore 213/host
 			if type(rawget(host_config, "storage")) == "string" and rawget(host_config, "default_storage") then
 				print("");
@@ -639,6 +676,15 @@ local function check(arg)
 				break;
 			end
 		end
+
+		for host, host_config in pairs(config) do --luacheck: ignore 213/host
+			if type(rawget(host_config, "storage")) == "string" and rawget(host_config, "default_storage") then
+				print("");
+				print("    The 'default_storage' option is not needed if 'storage' is set to a string.");
+				break;
+			end
+		end
+
 		local require_encryption = set.intersection(all_options, set.new({
 			"require_encryption", "c2s_require_encryption", "s2s_require_encryption"
 		})):empty();
@@ -713,12 +759,17 @@ local function check(arg)
 			local orphan_components = {};
 			local referenced_components = set.new();
 			local enabled_hosts_set = set.new();
+			local invalid_disco_items = {};
 			for host in it.filter("*", pairs(configmanager.getconfig())) do
 				local hostapi = api(host);
 				if hostapi:get_option_boolean("enabled", true) then
 					enabled_hosts_set:add(host);
 					for _, disco_item in ipairs(hostapi:get_option_array("disco_items", {})) do
-						referenced_components:add(disco_item[1]);
+						if type(disco_item[1]) == "string" then
+							referenced_components:add(disco_item[1]);
+						else
+							invalid_disco_items[host] = true;
+						end
 					end
 				end
 			end
@@ -732,6 +783,18 @@ local function check(arg)
 					end
 				end
 			end
+
+			if next(invalid_disco_items) ~= nil then
+				print("");
+				print("    Some hosts in your configuration file have an invalid 'disco_items' option.");
+				print("    This may cause further errors, such as unreferenced components.");
+				print("");
+				for host in it.sorted_pairs(invalid_disco_items) do
+					print("      - "..host);
+				end
+				print("");
+			end
+
 			if #orphan_components > 0 then
 				table.sort(orphan_components);
 				print("");
@@ -790,9 +853,25 @@ local function check(arg)
 
 			if #invalid_hosts > 0 or #alabel_hosts > 0 then
 				print("");
-				print("WARNING: Changing the name of a VirtualHost in Prosody's config file");
-				print("         WILL NOT migrate any existing data (user accounts, etc.) to the new name.");
+				print("    WARNING: Changing the name of a VirtualHost in Prosody's config file");
+				print("             WILL NOT migrate any existing data (user accounts, etc.) to the new name.");
 				ok = false;
+			end
+		end
+
+		-- Check features
+		do
+			local missing_features = {};
+			for host in enabled_user_hosts() do
+				local all_features = checks.features(host, true);
+				if not all_features then
+					table.insert(missing_features, host);
+				end
+			end
+			if #missing_features > 0 then
+				print("");
+				print("    Some of your hosts may be missing features due to a lack of configuration.");
+				print("    For more details, use the 'prosodyctl check features' command.");
 			end
 		end
 
@@ -901,7 +980,11 @@ local function check(arg)
 
 		local unknown_addresses = set.new();
 
-		for jid in enabled_hosts() do
+		local function is_valid_domain(domain)
+			return idna.to_ascii(domain) ~= nil;
+		end
+
+		for jid in it.filter(is_valid_domain, enabled_hosts()) do
 			local all_targets_ok, some_targets_ok = true, false;
 			local node, host = jid_split(jid);
 
@@ -1013,11 +1096,27 @@ local function check(arg)
 				target_hosts:remove("localhost");
 			end
 
+			local function check_record(name, rtype)
+				local res, err = dns.lookup(name, rtype);
+				if err then
+					print("    Problem looking up "..rtype.." record for '"..name.."': "..err);
+				elseif res and res.bogus then
+					print("    Problem looking up "..rtype.." record for '"..name.."': "..res.bogus);
+				elseif res and res.rcode and res.rcode ~= 0 and res.rcode ~= 3 then
+					print("    Problem looking up "..rtype.." record for '"..name.."': "..res.status);
+				end
+				return res and #res > 0;
+			end
+
 			local function check_address(target)
-				local A, AAAA = dns.lookup(idna.to_ascii(target), "A"), dns.lookup(idna.to_ascii(target), "AAAA");
 				local prob = {};
-				if use_ipv4 and not (A and #A > 0) then table.insert(prob, "A"); end
-				if use_ipv6 and not (AAAA and #AAAA > 0) then table.insert(prob, "AAAA"); end
+				local aname = idna.to_ascii(target);
+				if not aname then
+					print("    '" .. target .. "' is not a valid hostname");
+					return prob;
+				end
+				if use_ipv4 and not check_record(aname, "A") then table.insert(prob, "A"); end
+				if use_ipv6 and not check_record(aname, "AAAA") then table.insert(prob, "AAAA"); end
 				return prob;
 			end
 
@@ -1255,7 +1354,7 @@ local function check(arg)
 							http_loaded = false;
 						end
 						if http_loaded and not x509_verify_identity(http_host, nil, cert) then
-							print("    Not valid for HTTPS connections to "..host..".")
+							print("    Not valid for HTTPS connections to "..http_host..".")
 							cert_ok = false
 						end
 						if use_dane then
@@ -1444,6 +1543,313 @@ local function check(arg)
 			end
 		end
 	end
+
+	function checks.features(check_host, quiet)
+		if not quiet then
+			print("Feature report");
+		end
+
+		local common_subdomains = {
+			http_file_share = "share";
+			muc = "groups";
+		};
+
+		local recommended_component_modules = {
+			muc = { "muc_mam" };
+		};
+
+		local function print_feature_status(feature, host)
+			if quiet then return; end
+			print("", feature.ok and "OK" or "(!)", feature.name);
+			if feature.desc then
+				print("", "", feature.desc);
+				print("");
+			end
+			if not feature.ok then
+				if feature.lacking_modules then
+					table.sort(feature.lacking_modules);
+					print("", "", "Suggested modules: ");
+					for _, module in ipairs(feature.lacking_modules) do
+						print("", "", ("  - %s: https://prosody.im/doc/modules/mod_%s"):format(module, module));
+					end
+				end
+				if feature.lacking_components then
+					table.sort(feature.lacking_components);
+					for _, component_module in ipairs(feature.lacking_components) do
+						local subdomain = common_subdomains[component_module];
+						local recommended_mods = recommended_component_modules[component_module];
+						if subdomain then
+							print("", "", "Suggested component:");
+							print("");
+							print("", "", "", ("-- Documentation: https://prosody.im/doc/modules/mod_%s"):format(component_module));
+							print("", "", "", ("Component %q %q"):format(subdomain.."."..host, component_module));
+							if recommended_mods then
+								print("", "", "", "    modules_enabled = {");
+								table.sort(recommended_mods);
+								for _, mod in ipairs(recommended_mods) do
+									print("", "", "", ("        %q;"):format(mod));
+								end
+								print("", "", "", "    }");
+							end
+						else
+							print("", "", ("Suggested component: %s"):format(component_module));
+						end
+					end
+					print("");
+					print("", "", "If you have already configured any of these components, they may not be");
+					print("", "", "linked correctly to "..host..". For more info see https://prosody.im/doc/components");
+				end
+				if feature.lacking_component_modules then
+					table.sort(feature.lacking_component_modules, function (a, b)
+						return a.host < b.host;
+					end);
+					for _, problem in ipairs(feature.lacking_component_modules) do
+						local hostapi = api(problem.host);
+						local current_modules_enabled = hostapi:get_option_array("modules_enabled", {});
+						print("", "", ("Component %q is missing the following modules: %s"):format(problem.host, table.concat(problem.missing_mods)));
+						print("");
+						print("","", "Add the missing modules to your modules_enabled under the Component, like this:");
+						print("");
+						print("");
+						print("", "", "", ("-- Documentation: https://prosody.im/doc/modules/mod_%s"):format(problem.component_module));
+						print("", "", "", ("Component %q %q"):format(problem.host, problem.component_module));
+						print("", "", "", ("    modules_enabled = {"));
+						for _, mod in ipairs(current_modules_enabled) do
+							print("", "", "", ("        %q;"):format(mod));
+						end
+						for _, mod in ipairs(problem.missing_mods) do
+							print("", "", "", ("        %q; -- Add this!"):format(mod));
+						end
+						print("", "", "", ("    }"));
+					end
+				end
+			end
+			if feature.meta then
+				for k, v in it.sorted_pairs(feature.meta) do
+					print("", "", (" - %s: %s"):format(k, v));
+				end
+			end
+			print("");
+		end
+
+		local all_ok = true;
+
+		local config = configmanager.getconfig();
+
+		local f, s, v;
+		if check_host then
+			f, s, v = it.values({ check_host });
+		else
+			f, s, v = enabled_user_hosts();
+		end
+
+		for host in f, s, v do
+			local modules_enabled = set.new(config["*"].modules_enabled);
+			modules_enabled:include(set.new(config[host].modules_enabled));
+
+			-- { [component_module] = { hostname1, hostname2, ... } }
+			local host_components = setmetatable({}, { __index = function (t, k) return rawset(t, k, {})[k]; end });
+
+			do
+				local hostapi = api(host);
+
+				-- Find implicitly linked components
+				for other_host in enabled_components() do
+					local parent_host = other_host:match("^[^.]+%.(.+)$");
+					if parent_host == host then
+						local component_module = configmanager.get(other_host, "component_module");
+						if component_module then
+							table.insert(host_components[component_module], other_host);
+						end
+					end
+				end
+
+				-- And components linked explicitly
+				for _, disco_item in ipairs(hostapi:get_option_array("disco_items", {})) do
+					local other_host = disco_item[1];
+					if type(other_host) == "string" then
+						local component_module = configmanager.get(other_host, "component_module");
+						if component_module then
+							table.insert(host_components[component_module], other_host);
+						end
+					end
+				end
+			end
+
+			local current_feature;
+
+			local function check_module(suggested, alternate, ...)
+				if set.intersection(modules_enabled, set.new({suggested, alternate, ...})):empty() then
+					current_feature.lacking_modules = current_feature.lacking_modules or {};
+					table.insert(current_feature.lacking_modules, suggested);
+				end
+			end
+
+			local function check_component(suggested, alternate, ...)
+				local found;
+				for _, component_module in ipairs({ suggested, alternate, ... }) do
+					found = host_components[component_module][1];
+					if found then
+						local enabled_component_modules = api(found):get_option_inherited_set("modules_enabled");
+						local recommended_mods = recommended_component_modules[component_module];
+						if recommended_mods then
+							local missing_mods = {};
+							for _, mod in ipairs(recommended_mods) do
+								if not enabled_component_modules:contains(mod) then
+									table.insert(missing_mods, mod);
+								end
+							end
+							if #missing_mods > 0 then
+								if not current_feature.lacking_component_modules then
+									current_feature.lacking_component_modules = {};
+								end
+								table.insert(current_feature.lacking_component_modules, {
+									host = found;
+									component_module = component_module;
+									missing_mods = missing_mods;
+								});
+							end
+						end
+						break;
+					end
+				end
+				if not found then
+					current_feature.lacking_components = current_feature.lacking_components or {};
+					table.insert(current_feature.lacking_components, suggested);
+				end
+				return found;
+			end
+
+			local features = {
+				{
+					name = "Basic functionality";
+					desc = "Support for secure connections, authentication and messaging";
+					check = function ()
+						check_module("disco");
+						check_module("roster");
+						check_module("saslauth");
+						check_module("tls");
+					end;
+				};
+				{
+					name = "Multi-device messaging and data synchronization";
+					desc = "Multiple clients connected to the same account stay in sync";
+					check = function ()
+						check_module("carbons");
+						check_module("mam");
+						check_module("bookmarks");
+						check_module("pep");
+					end;
+				};
+				{
+					name = "Mobile optimizations";
+					desc = "Help mobile clients reduce battery and data usage";
+					check = function ()
+						check_module("smacks");
+						check_module("csi_simple", "csi_battery_saver");
+					end;
+				};
+				{
+					name = "Web connections";
+					desc = "Allow connections from browser-based web clients";
+					check = function ()
+						check_module("bosh");
+						check_module("websocket");
+					end;
+				};
+				{
+					name = "User profiles";
+					desc = "Enable users to publish profile information";
+					check = function ()
+						check_module("vcard_legacy", "vcard");
+					end;
+				};
+				{
+					name = "Blocking";
+					desc = "Block communication with chosen entities";
+					check = function ()
+						check_module("blocklist");
+					end;
+				};
+				{
+					name = "Push notifications";
+					desc = "Receive notifications on platforms that don't support persistent connections";
+					check = function ()
+						check_module("cloud_notify");
+					end;
+				};
+				{
+					name = "Audio/video calls and P2P";
+					desc = "Assist clients in setting up connections between each other";
+					check = function ()
+						check_module(
+							"turn_external",
+							"external_services",
+							"turncredentials",
+							"extdisco"
+						);
+					end;
+				};
+				{
+					name = "File sharing";
+					desc = "Sharing of files to groups and offline users";
+					check = function (self)
+						local service = check_component("http_file_share", "http_upload", "http_upload_external");
+						if service then
+							local size_limit;
+							if api(service):get_option("component_module") == "http_file_share" then
+								size_limit = api(service):get_option_number("http_file_share_size_limit", 10*1024*1024);
+							end
+							if size_limit then
+								self.meta = {
+									["Size limit"] = human_units.format(size_limit, "b", "b");
+								};
+							end
+						end
+					end;
+				};
+				{
+					name = "Group chats";
+					desc = "Create group chats and channels";
+					check = function ()
+						check_component("muc");
+					end;
+				};
+			};
+
+			if not quiet then
+				print(host);
+			end
+
+			for _, feature in ipairs(features) do
+				current_feature = feature;
+				feature:check();
+				feature.ok = (
+					not feature.lacking_modules and
+					not feature.lacking_components and
+					not feature.lacking_component_modules
+				);
+				-- For improved presentation, we group the (ok) and (not ok) features
+				if feature.ok then
+					print_feature_status(feature, host);
+				end
+			end
+
+			for _, feature in ipairs(features) do
+				if not feature.ok then
+					all_ok = false;
+					print_feature_status(feature, host);
+				end
+			end
+
+			if not quiet then
+				print("");
+			end
+		end
+
+		return all_ok;
+	end
+
 	if what == nil or what == "all" then
 		local ret;
 		ret = checks.disabled();

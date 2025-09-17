@@ -557,6 +557,10 @@ function module.add_host(module)
 			["POST /"] = handle_POST;
 		};
 	});
+
+	if module.host ~= "*" then
+		module:depends("http_altconnect", true);
+	end
 end
 
 if require"prosody.core.modulemanager".get_modules_for_host("*"):contains(module.name) then

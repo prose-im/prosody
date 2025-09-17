@@ -89,6 +89,14 @@ function startup.read_config()
 		end
 	end
 	prosody.config_file = filename
+	local credentials_directory = os.getenv("CREDENTIALS_DIRECTORY");
+	if credentials_directory then
+		config.set_credentials_directory(credentials_directory);
+	elseif prosody.process_type == "prosody" then
+		config.set_credential_fallback_mode("error");
+	else
+		config.set_credential_fallback_mode("warn");
+	end
 	local ok, level, err = config.load(filename);
 	if not ok then
 		print("\n");
@@ -271,7 +279,6 @@ function startup.init_global_state()
 		config = CFG_CONFIGDIR or ".";
 		plugins = CFG_PLUGINDIR or "plugins";
 		data = "data";
-		credentials = os.getenv("CREDENTIALS_DIRECTORY");
 	};
 
 	prosody.arg = _G.arg;
@@ -423,6 +430,19 @@ function startup.init_async()
 	local timer = require "prosody.util.timer";
 	async.set_nexttick(function(f) return timer.add_task(0, f); end);
 	async.set_schedule_function(timer.add_task);
+end
+
+function startup.instrument()
+	local statsmanager = require "prosody.core.statsmanager";
+	local timed = require"prosody.util.openmetrics".timed;
+
+	local adns = require "prosody.net.adns";
+	if adns.instrument then
+		local m = statsmanager.metric("histogram", "prosody_dns", "seconds", "DNS lookups", { "qclass"; "qtype" }, {
+				buckets = { 1 / 1024; 1 / 256; 1 / 64; 1 / 16; 1 / 4; 1; 4 };
+		});
+		adns.instrument(function(qclass, qtype) return timed(m:with_labels(qclass, qtype)); end);
+	end
 end
 
 function startup.init_data_store()
@@ -814,12 +834,12 @@ function startup.hook_posix_signals()
 	end);
 end
 
-function startup.systemd_notify()
+function startup.notification_socket()
 	local notify_socket_name = os.getenv("NOTIFY_SOCKET");
 	if not notify_socket_name then return end
 	local have_unix, unix = pcall(require, "socket.unix");
 	if not have_unix or type(unix) ~= "table" then
-		log("error", "LuaSocket without UNIX socket support, can't notify systemd.")
+		log("error", "LuaSocket without UNIX socket support, can't notify process manager.")
 		return os.exit(1);
 	end
 	log("debug", "Will notify on socket %q", notify_socket_name);
@@ -827,7 +847,7 @@ function startup.systemd_notify()
 	local notify_socket = unix.dgram();
 	local ok, err = notify_socket:setpeername(notify_socket_name);
 	if not ok then
-		log("error", "Could not connect to systemd notification socket %q: %q", notify_socket_name, err);
+		log("error", "Could not connect to notification socket %q: %q", notify_socket_name, err);
 		return os.exit(1);
 	end
 	local time = require "prosody.util.time";
@@ -922,13 +942,14 @@ function startup.prosody()
 	startup.load_secondary_libraries();
 	startup.init_promise();
 	startup.init_async();
+	startup.instrument();
 	startup.init_http_client();
 	startup.init_data_store();
 	startup.init_global_protection();
 	startup.posix_daemonize();
 	startup.write_pidfile();
 	startup.hook_posix_signals();
-	startup.systemd_notify();
+	startup.notification_socket();
 	startup.prepare_to_start();
 	startup.notify_started();
 end

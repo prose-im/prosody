@@ -657,6 +657,7 @@ interface.send = interface.write;
 
 -- Close, possibly after writing is done
 function interface:close()
+	local status, err;
 	if self.writebuffer and #self.writebuffer ~= 0 then
 		self._connected = false;
 		self:set(false, true); -- Flush final buffer contents
@@ -665,6 +666,24 @@ function interface:close()
 		self.write, self.send = noop, noop; -- No more writing
 		self:debug("Close after writing remaining buffered data");
 		self.ondrain = interface.close;
+	elseif self.conn.shutdown and self._tls then
+		status, err = self.conn:shutdown();
+		self.onreadable = interface.close;
+		self.onwritable = interface.close;
+		if err == nil then
+			if status == true then
+				self._tls = false;
+			end
+			return self:close();
+		elseif err == "wantread" then
+			self:set(true, nil);
+			self:setreadtimeout();
+		elseif err == "wantwrite" then
+			self:set(nil, true);
+			self:setwritetimeout();
+		else
+			self._tls = false;
+		end
 	else
 		self:debug("Closing now");
 		self.write, self.send = noop, noop;
@@ -675,6 +694,8 @@ function interface:close()
 end
 
 function interface:destroy()
+	-- make sure tls sockets aren't put in blocking mode
+	if self.conn.shutdown and self._tls then self.conn:shutdown(); end
 	self:del();
 	self:setwritetimeout(false);
 	self:setreadtimeout(false);
@@ -751,7 +772,7 @@ function interface:starttls(tls_ctx)
 		self.onreadable = interface.inittls;
 		self:set(true, true);
 		self:setreadtimeout(false);
-		self:setwritetimeout(cfg.ssl_handshake_timeout);
+		self:setwritetimeout(self._connected and cfg.ssl_handshake_timeout or cfg.connect_timeout);
 		self:debug("Prepared to start TLS");
 	end
 end
@@ -786,7 +807,7 @@ function interface:inittls(tls_ctx, now)
 			self:debug("Enabling DANE with %d TLSA records", #self.extra.tlsa);
 			self:noise("DANE hostname is %q", self.servername or self.extra.dane_hostname);
 			for _, tlsa in ipairs(self.extra.tlsa) do
-				self:noise("TLSA: %q", tlsa);
+				self:noise("TLSA: %s", tlsa);
 				conn:settlsa(tlsa.use, tlsa.select, tlsa.match, tlsa.data);
 			end
 		end

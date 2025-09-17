@@ -56,7 +56,7 @@ local function render(template : string, root : st.stanza_t, escape : escape_t, 
 
 			if func == "each" and tmpl then
 				if not st.is_stanza(value) then
-					return pre_blank..post_blank;
+					return pre_blank..post_blank
 				end
 				if not args then value, args = root, path; end
 				local ns, name = s_match(args, "^(%b{})(.*)$");
@@ -94,15 +94,15 @@ local function render(template : string, root : st.stanza_t, escape : escape_t, 
 
 		if value is string then
 			if not is_escaped then value = escape(value); end
-			return pre_blank .. value .. post_blank;
+			return pre_blank .. (value as string) .. post_blank
 		elseif st.is_stanza(value) then
 			value = value:get_text();
 			if value then
-				return pre_blank .. escape(value) .. post_blank;
+				return pre_blank .. escape(value) .. post_blank
 			end
 		end
-		return pre_blank .. post_blank;
-	end));
+		return pre_blank .. post_blank
+	end))
 end
 
-return { render = render };
+return { render = render }

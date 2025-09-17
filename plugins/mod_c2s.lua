@@ -252,12 +252,16 @@ local function session_close(session, reason)
 				if not session.destroyed then
 					session.log("warn", "Failed to receive a stream close response, closing connection anyway...");
 					sm_destroy_session(session, reason_text);
-					if conn then conn:close(); end
+					if conn then
+						conn:close();
+					end
 				end
 			end);
 		else
 			sm_destroy_session(session, reason_text);
-			if conn then conn:close(); end
+			if conn then
+				conn:close();
+			end
 		end
 	else
 		local reason_text = (reason and (reason.name or reason.text or reason.condition)) or reason;
@@ -273,6 +277,7 @@ local function disconnect_user_sessions(reason, leave_resource)
 		if not (hosts[host] and hosts[host].type == "local") then
 			return -- not a local VirtualHost so no sessions
 		end
+		module:log("debug", "Disconnecting %s sessions of %s@%s (%s)", not leave_resource and "all" or "other", username, host, reason.text);
 		local user = hosts[host].sessions[username];
 		if user and user.sessions then
 			for r, session in pairs(user.sessions) do

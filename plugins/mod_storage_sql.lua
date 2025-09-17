@@ -13,18 +13,22 @@ local t_concat = table.concat;
 
 local have_dbisql, dbisql = pcall(require, "prosody.util.sql");
 local have_sqlite, sqlite = pcall(require, "prosody.util.sqlite3");
-if not have_dbisql then
-	module:log("debug", "Could not load LuaDBI: %s", dbisql)
-	dbisql = nil;
-end
-if not have_sqlite then
-	module:log("debug", "Could not load LuaSQLite3: %s", sqlite)
-	sqlite = nil;
-end
 if not (have_dbisql or have_sqlite) then
 	module:log("error", "LuaDBI or LuaSQLite3 are required for using SQL databases but neither are installed");
 	module:log("error", "Please install at least one of LuaDBI and LuaSQLite3. See https://prosody.im/doc/depends");
+	module:log("debug", "Could not load LuaDBI: %s", dbisql);
+	module:log("debug", "Could not load LuaSQLite3: %s", sqlite);
 	error("No SQL library available")
+end
+
+local function get_sql_lib(driver)
+	if driver == "SQLite3" and have_sqlite then
+		return sqlite;
+	elseif have_dbisql then
+		return dbisql;
+	else
+		error(dbisql);
+	end
 end
 
 local noop = function() end
@@ -36,6 +40,20 @@ local function iterator(result)
 			return unpack(row);
 		end
 	end, result, nil;
+end
+
+-- COMPAT Support for UPSERT is not in all versions of all compatible databases.
+local function has_upsert(engine)
+	if engine.params.driver == "SQLite3" then
+		-- SQLite3 >= 3.24.0
+		return engine.sqlite_version and (engine.sqlite_version[2] or 0) >= 24 and engine.has_upsert_index;
+	elseif engine.params.driver == "PostgreSQL" then
+		-- PostgreSQL >= 9.5
+		-- Versions without support have long since reached end of life.
+		return engine.has_upsert_index;
+	end
+	-- We don't support UPSERT on MySQL/MariaDB, they seem to have a completely different syntax, uncertaint from which versions.
+	return false
 end
 
 local default_params = { driver = "SQLite3" };
@@ -225,7 +243,7 @@ function map_store:set_keys(username, keydatas)
 		LIMIT 1;
 		]];
 		for key, data in pairs(keydatas) do
-			if type(key) == "string" and key ~= "" and engine.params.driver ~= "MySQL" and data ~= self.remove then
+			if type(key) == "string" and key ~= "" and has_upsert(engine) and data ~= self.remove then
 				local t, value = assert(serialize(data));
 				engine:insert(upsert_sql, host, username or "", self.store, key, t, value, t, value);
 			elseif type(key) == "string" and key ~= "" then
@@ -743,7 +761,7 @@ end
 
 
 local function create_table(engine) -- luacheck: ignore 431/engine
-	local sql = engine.params.driver == "SQLite3" and sqlite or dbisql;
+	local sql = get_sql_lib(engine.params.driver);
 	local Table, Column, Index = sql.Table, sql.Column, sql.Index;
 
 	local ProsodyTable = Table {
@@ -784,7 +802,7 @@ end
 local function upgrade_table(engine, params, apply_changes) -- luacheck: ignore 431/engine
 	local changes = false;
 	if params.driver == "MySQL" then
-		local sql = dbisql;
+		local sql = get_sql_lib("MySQL");
 		local success,err = engine:transaction(function()
 			do
 				local result = assert(engine:execute("SHOW COLUMNS FROM \"prosody\" WHERE \"Field\"='value' and \"Type\"='text'"));
@@ -852,38 +870,40 @@ local function upgrade_table(engine, params, apply_changes) -- luacheck: ignore 
 		success,err = engine:transaction(function()
 			return engine:execute(check_encoding_query, params.database,
 				engine.charset, engine.charset.."_bin");
+		end);
+		if not success then
+			module:log("error", "Failed to check/upgrade database encoding: %s", err or "unknown error");
+			return false;
+		end
+	else
+		local indices = {};
+		engine:transaction(function ()
+			if params.driver == "SQLite3" then
+				for row in engine:select [[SELECT "name" FROM "sqlite_schema" WHERE "type"='index' AND "tbl_name"='prosody';]] do
+					indices[row[1]] = true;
+				end
+			elseif params.driver == "PostgreSQL" then
+				for row in engine:select [[SELECT "indexname" FROM "pg_indexes" WHERE "tablename"='prosody';]] do
+					indices[row[1]] = true;
+				end
+			end
+		end)
+		if indices["prosody_index"] then
+			local success = engine:transaction(function ()
+				return assert(engine:execute([[DROP INDEX "prosody_index";]]));
 			end);
 			if not success then
-				module:log("error", "Failed to check/upgrade database encoding: %s", err or "unknown error");
+				module:log("error", "Failed to delete obsolete index \"prosody_index\"");
 				return false;
 			end
-		else
-			local indices = {};
-			engine:transaction(function ()
-				if params.driver == "SQLite3" then
-					for row in engine:select [[SELECT "name" FROM "sqlite_schema" WHERE "type"='index' AND "tbl_name"='prosody' AND "name"='prosody_index';]] do
-						indices[row[1]] = true;
-					end
-				elseif params.driver == "PostgreSQL" then
-					for row in engine:select [[SELECT "indexname" FROM "pg_indexes" WHERE "tablename"='prosody' AND "indexname"='prosody_index';]] do
-						indices[row[1]] = true;
-					end
-				end
-			end)
-			if indices["prosody_index"] then
-				if apply_changes then
-					local success = engine:transaction(function ()
-						return assert(engine:execute([[DROP INDEX "prosody_index";]]));
-					end);
-					if not success then
-						module:log("error", "Failed to delete obsolete index \"prosody_index\"");
-						return false;
-					end
-				else
-					changes = true;
-				end
-			end
 		end
+		if not indices["prosody_unique_index"] then
+			module:log("warn", "Index \"prosody_unique_index\" does not exist, performance may be worse than normal!");
+			engine.has_upsert_index = false;
+		else
+			engine.has_upsert_index = true;
+		end
+	end
 	return changes;
 end
 
@@ -910,7 +930,7 @@ end
 function module.load()
 	local engines = module:shared("/*/sql/connections");
 	local params = normalize_params(module:get_option("sql", default_params));
-	local sql = params.driver == "SQLite3" and sqlite or dbisql;
+	local sql = get_sql_lib(params.driver);
 	local db_uri = sql.db2uri(params);
 	engine = engines[db_uri];
 	if not engine then
@@ -932,6 +952,14 @@ function module.load()
 					local option = row[1]:lower();
 					local opt, val = option:match("^([^=]+)=(.*)$");
 					compile_options[opt or option] = tonumber(val) or val or true;
+				end
+				-- COMPAT Need to check SQLite3 version because SQLCipher 3.x was based on SQLite3 prior to 3.24.0 when UPSERT was introduced
+				for row in engine:select("SELECT sqlite_version()") do
+					local version = {};
+					for n in row[1]:gmatch("%d+") do
+						table.insert(version, tonumber(n));
+					end
+					engine.sqlite_version = version;
 				end
 				engine.sqlite_compile_options = compile_options;
 
@@ -994,7 +1022,7 @@ function module.command(arg)
 		local uris = {};
 		for host in pairs(prosody.hosts) do -- luacheck: ignore 431/host
 			local params = normalize_params(config.get(host, "sql") or default_params);
-			local sql = engine.params.driver == "SQLite3" and sqlite or dbisql;
+			local sql = get_sql_lib(engine.params.driver);
 			uris[sql.db2uri(params)] = params;
 		end
 		print("We will check and upgrade the following databases:\n");
@@ -1003,14 +1031,14 @@ function module.command(arg)
 		end
 		print("");
 		print("Ensure you have working backups of the above databases before continuing! ");
-		if not hi.show_yesno("Continue with the database upgrade? [yN]") then
+		if false == hi.show_yesno("Continue with the database upgrade? [yN]") then
 			print("Ok, no upgrade. But you do have backups, don't you? ...don't you?? :-)");
 			return;
 		end
 		-- Upgrade each one
 		for _, params in pairs(uris) do
 			print("Checking "..params.database.."...");
-			local sql = params.driver == "SQLite3" and sqlite or dbisql;
+			local sql = get_sql_lib(params.driver);
 			engine = sql:create_engine(params);
 			upgrade_table(engine, params, true);
 		end
@@ -1022,3 +1050,32 @@ function module.command(arg)
 		print("","upgrade - Perform database upgrade");
 	end
 end
+
+module:add_item("shell-command", {
+	section = "sql";
+	section_desc = "SQL management commands";
+	name = "create";
+	desc = "Create the tables and indices used by Prosody (again)";
+	args = { { name = "host"; type = "string" } };
+	host_selector = "host";
+	handler = function(shell, _host)
+		local logger = require "prosody.util.logger";
+		local writing = false;
+		local sink = logger.add_simple_sink(function (source, _level, message)
+			local print = shell.session.print;
+			if writing or source ~= "sql" then return; end
+			writing = true;
+			print(message);
+			writing = false;
+		end);
+
+		local debug_enabled = engine._debug;
+		engine:debug(true);
+		create_table(engine);
+		engine:debug(debug_enabled);
+
+		if not logger.remove_sink(sink) then
+			module:log("warn", "Unable to remove log sink");
+		end
+	end;
+})

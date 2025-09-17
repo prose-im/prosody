@@ -161,7 +161,7 @@ end
 function set_user_role(user, role_name)
 	local role = role_registry[role_name];
 	if not role then
-		return error("Cannot assign default user an unknown role: "..tostring(role_name));
+		return error("Cannot assign user an unknown role: "..tostring(role_name));
 	end
 	local keys_update = {
 		_default = role_name;
@@ -180,14 +180,19 @@ function set_user_role(user, role_name)
 end
 
 function add_user_secondary_role(user, role_name)
-	if not role_registry[role_name] then
-		return error("Cannot assign default user an unknown role: "..tostring(role_name));
+	local role = role_registry[role_name];
+	if not role then
+		return error("Cannot assign user an unknown role: "..tostring(role_name));
 	end
-	role_map_store:set(user, role_name, true);
+	local ok, err = role_map_store:set(user, role_name, true);
+	if not ok then
+		return nil, err;
+	end
+	return role;
 end
 
 function remove_user_secondary_role(user, role_name)
-	role_map_store:set(user, role_name, nil);
+	return role_map_store:set(user, role_name, nil);
 end
 
 function get_user_secondary_roles(user)
@@ -293,7 +298,11 @@ function add_default_permission(role_name, action, policy)
 end
 
 function get_role_by_name(role_name)
-	return assert(role_registry[role_name], role_name);
+	local role = role_registry[role_name];
+	if not role then
+		return error("Unknown role: "..role_name);
+	end
+	return role, role_name;
 end
 
 function get_all_roles()

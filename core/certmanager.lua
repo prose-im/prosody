@@ -91,7 +91,7 @@ local function index_certs(dir, files_by_name, depth_limit)
 				index_certs(full, files_by_name, depth_limit-1);
 			end
 		elseif file:find("%.crt$") or file:find("fullchain") then -- This should catch most fullchain files
-			local f = io_open(full);
+			local f, err = io_open(full);
 			if f then
 				-- TODO look for chained certificates
 				local firstline = f:read();
@@ -113,13 +113,20 @@ local function index_certs(dir, files_by_name, depth_limit)
 								files_by_name[name] = { [full] = services; };
 							end
 						end
+					else
+						log("debug", "Skipping expired certificate: %s", full);
 					end
+				else
+					log("debug", "Skipping non-certificate (based on contents): %s", full);
 				end
 				f:close();
+			elseif err then
+				log("debug", "Skipping file due to error:  %s", err);
 			end
+		else
+			log("debug", "Skipping non-certificate (based on filename): %s", full);
 		end
 	end
-	log("debug", "Certificate index: %q", files_by_name);
 	-- | hostname | filename | service |
 	return files_by_name;
 end
@@ -188,10 +195,6 @@ local core_defaults = {
 		single_dh_use = tls.features.options.single_dh_use;
 		single_ecdh_use = tls.features.options.single_ecdh_use;
 		no_renegotiation = tls.features.options.no_renegotiation;
-	};
-	verifyext = {
-		"lsec_continue", -- Continue past certificate verification errors
-		"lsec_ignore_purpose", -- Validate client certificates as if they were server certificates
 	};
 	curve = tls.features.algorithms.ec and not tls.features.capabilities.curves_list and "secp384r1";
 	curveslist = {

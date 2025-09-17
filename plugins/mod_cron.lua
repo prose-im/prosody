@@ -1,3 +1,4 @@
+-- This file is generated from teal-src/prosody/plugins/mod_cron.tl
 module:set_global();
 
 local async = require("prosody.util.async");
@@ -9,7 +10,7 @@ local cron_spread_factor = module:get_option_number("cron_spread_factor", 0);
 local active_hosts = {}
 
 if prosody.process_type == "prosodyctl" then
-	return; -- Yes, it happens...
+	return
 end
 
 function module.add_host(host_module)
@@ -17,14 +18,24 @@ function module.add_host(host_module)
 	local last_run_times = host_module:open_store("cron", "map");
 	active_hosts[host_module.host] = true;
 
-	local function save_task(task, started_at) last_run_times:set(nil, task.id, started_at); end
+	local function save_task(task, started_at)
+		last_run_times:set(nil, task.id, started_at);
+	end
 
-	local function restore_task(task) if task.last == nil then task.last = last_run_times:get(nil, task.id); end end
+	local function restore_task(task)
+		if task.last == nil then
+			task.last = last_run_times:get(nil, task.id);
+		end
+	end
 
 	local function task_added(event)
 		local task = event.item;
-		if task.name == nil then task.name = task.when; end
-		if task.id == nil then task.id = event.source.name .. "/" .. task.name:gsub("%W", "_"):lower(); end
+		if task.name == nil then
+			task.name = task.when;
+		end
+		if task.id == nil then
+			task.id = event.source.name .. "/" .. task.name:gsub("%W", "_"):lower();
+		end
 		task.period = host_module:get_option_period(task.id:gsub("/", "_") .. "_period", "1" .. task.when, 60, 86400 * 7 * 53);
 		task.restore = restore_task;
 		task.save = save_task;
@@ -40,14 +51,20 @@ function module.add_host(host_module)
 
 	host_module:handle_items("task", task_added, task_removed, true);
 
-	function host_module.unload() active_hosts[host_module.host] = nil; end
+	function host_module.unload()
+		active_hosts[host_module.host] = nil;
+	end
 end
 
-local function should_run(task, last) return not last or last + task.period * 0.995 <= os.time() end
+local function should_run(task, last)
+	return not last or last + task.period * 0.995 <= os.time()
+end
 
 local function run_task(task)
 	task:restore();
-	if not should_run(task, task.last) then return end
+	if not should_run(task, task.last) then
+		return
+	end
 	local started_at = os.time();
 	task:run(started_at);
 	task.last = started_at;
@@ -55,7 +72,7 @@ local function run_task(task)
 end
 
 local function spread(t, factor)
-	return t * (1 - factor + 2*factor*math.random());
+	return t * (1 - factor + 2 * factor * math.random())
 end
 
 local task_runner = async.runner(run_task);
@@ -64,7 +81,9 @@ scheduled = module:add_timer(cron_initial_delay, function()
 	local delay = spread(cron_check_delay, cron_spread_factor);
 	for host in pairs(active_hosts) do
 		module:log("debug", "Running periodic tasks for host %s", host);
-		for _, task in ipairs(module:context(host):get_host_items("task")) do task_runner:run(task); end
+		for _, task in ipairs(module:context(host):get_host_items("task")) do
+			task_runner:run(task);
+		end
 	end
 	module:log("debug", "Wait %gs", delay);
 	return delay
@@ -78,7 +97,7 @@ module:add_item("shell-command", {
 	args = {};
 	handler = function(self, filter_host)
 		local format_table = require("prosody.util.human.io").table;
-		local it = require("util.iterators");
+		local it = require("prosody.util.iterators");
 		local row = format_table({
 			{ title = "Host"; width = "2p" };
 			{ title = "Task"; width = "3p" };

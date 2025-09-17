@@ -64,6 +64,7 @@
     <implements rdf:resource="https://www.rfc-editor.org/info/rfc7673"/>
     <implements rdf:resource="https://www.rfc-editor.org/info/rfc8305"/>
     <implements rdf:resource="https://www.rfc-editor.org/info/rfc9266"/>
+    <implements rdf:resource="https://www.rfc-editor.org/info/rfc9525"/>
     <implements rdf:resource="https://datatracker.ietf.org/doc/draft-cridland-xmpp-session/">
       <!-- since=0.6.0 note=Added in hg:0bbbc9042361 -->
     </implements>
@@ -245,7 +246,7 @@
         <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0090.html"/>
         <xmpp:version>1.2</xmpp:version>
         <xmpp:since>0.1.0</xmpp:since>
-        <xmpp:until>trunk</xmpp:until>
+        <xmpp:until>13.0.0</xmpp:until>
         <xmpp:status>removed</xmpp:status>
         <xmpp:note>mod_time</xmpp:note>
       </xmpp:SupportedXep>
@@ -376,6 +377,15 @@
         <xmpp:since>0.11.0</xmpp:since>
         <xmpp:status>complete</xmpp:status>
         <xmpp:note>via XEP-0398</xmpp:note>
+      </xmpp:SupportedXep>
+    </implements>
+    <implements>
+      <xmpp:SupportedXep>
+        <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0156.html"/>
+        <xmpp:version>1.4.0</xmpp:version>
+        <xmpp:since>13.0.0</xmpp:since>
+        <xmpp:status>complete</xmpp:status>
+        <xmpp:note>mod_http_altconnect</xmpp:note>
       </xmpp:SupportedXep>
     </implements>
     <implements>
@@ -716,6 +726,24 @@
     </implements>
     <implements>
       <xmpp:SupportedXep>
+        <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0333.html"/>
+        <xmpp:version>1.0.0</xmpp:version>
+        <xmpp:since>0.10.0</xmpp:since>
+        <xmpp:status>partial</xmpp:status>
+        <xmpp:note>Used in mod_mam and mod_muc</xmpp:note>
+      </xmpp:SupportedXep>
+    </implements>
+    <implements>
+      <xmpp:SupportedXep>
+        <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0334.html"/>
+        <xmpp:version>1.0.0</xmpp:version>
+        <xmpp:since>0.10.0</xmpp:since>
+        <xmpp:status>complete</xmpp:status>
+        <xmpp:note>Used in mod_carbons, mod_mam, and mod_muc</xmpp:note>
+      </xmpp:SupportedXep>
+    </implements>
+    <implements>
+      <xmpp:SupportedXep>
         <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0352.html"/>
         <xmpp:version>1.0.0</xmpp:version>
         <xmpp:since>0.11.0</xmpp:since>
@@ -730,6 +758,15 @@
         <xmpp:since>0.11.6</xmpp:since>
         <xmpp:status>complete</xmpp:status>
         <xmpp:note>triggers buffer flush in mod_csi_simple since 0.11.6; recognised by mod_carbons and mod_mam since 0.12</xmpp:note>
+      </xmpp:SupportedXep>
+    </implements>
+    <implements>
+      <xmpp:SupportedXep>
+        <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0357.html"/>
+        <xmpp:version>0.4.1</xmpp:version>
+        <xmpp:since>13.0.0</xmpp:since>
+        <xmpp:status>complete</xmpp:status>
+        <xmpp:note>mod_cloud_notify</xmpp:note>
       </xmpp:SupportedXep>
     </implements>
     <implements>
@@ -831,7 +868,7 @@
     <implements>
       <xmpp:SupportedXep>
         <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0421.html"/>
-        <xmpp:version>0.2.0</xmpp:version>
+        <xmpp:version>1.0.0</xmpp:version>
         <xmpp:since>0.12.0</xmpp:since>
         <xmpp:status>complete</xmpp:status>
         <xmpp:note>mod_muc</xmpp:note>
@@ -848,7 +885,7 @@
       <xmpp:SupportedXep>
         <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0440.html"/>
         <xmpp:version>0.4.2</xmpp:version>
-        <xmpp:since>trunk</xmpp:since>
+        <xmpp:since>13.0.0</xmpp:since>
         <xmpp:status>complete</xmpp:status>
       </xmpp:SupportedXep>
     </implements>
@@ -872,7 +909,7 @@
       <xmpp:SupportedXep>
         <xmpp:xep rdf:resource="https://xmpp.org/extensions/xep-0478.html"/>
         <xmpp:version>0.2.0</xmpp:version>
-        <xmpp:since>trunk</xmpp:since>
+        <xmpp:since>13.0.0</xmpp:since>
       </xmpp:SupportedXep>
     </implements>
   </Project>

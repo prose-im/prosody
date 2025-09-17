@@ -29,8 +29,8 @@ local function read_line(prompt_string)
 	end
 end
 
-local function send_line(client, line)
-	client.send(st.stanza("repl-input", { width = tostring(term_width()) }):text(line));
+local function send_line(client, line, interactive)
+	client.send(st.stanza("repl-input", { width = tostring(term_width()), repl = interactive == false and "0" or "1" }):text(line));
 end
 
 local function repl(client)
@@ -64,6 +64,13 @@ local function printbanner()
 	print("https://prosody.im/doc/console\n");
 end
 
+local function check()
+	local lfs = require "lfs";
+	local socket_path = path.resolve_relative_path(prosody.paths.data, config.get("*", "admin_socket") or "prosody.sock");
+	local state = lfs.attributes(socket_path, "mode");
+	return state == "socket";
+end
+
 local function start(arg) --luacheck: ignore 212/arg
 	local client = adminstream.client();
 	local opts, err, where = parse_args(arg);
@@ -80,21 +87,11 @@ local function start(arg) --luacheck: ignore 212/arg
 
 	if arg[1] then
 		if arg[2] then
-			local fmt = { "%s"; ":%s("; ")" };
-			for i = 3, #arg do
-				if arg[i]:sub(1, 1) == ":" then
-					table.insert(fmt, i, ")%s(");
-				elseif i > 3 and fmt[i - 1]:match("%%q$") then
-					table.insert(fmt, i, ", %q");
-				else
-					table.insert(fmt, i, "%q");
-				end
-			end
-			arg[1] = string.format(table.concat(fmt), table.unpack(arg));
+			arg[1] = ("{"..string.rep("%q", #arg, ", ").."}"):format(table.unpack(arg, 1, #arg));
 		end
 
 		client.events.add_handler("connected", function()
-			send_line(client, arg[1]);
+			send_line(client, arg[1], false);
 			return true;
 		end, 1);
 
@@ -137,7 +134,11 @@ local function start(arg) --luacheck: ignore 212/arg
 		end
 		if stanza.attr.type == "password" then
 			local password = human_io.read_password();
-			client.send(st.stanza("repl-requested-input", { type = stanza.attr.type, id = stanza.attr.id }):text(password));
+			client.send(st.stanza("repl-requested-input", {
+				type = stanza.attr.type;
+				id = stanza.attr.id;
+				status = password and "submit" or "cancel";
+			}):text(password or ""));
 		else
 			io.stderr:write("Internal error - unexpected input request type "..tostring(stanza.attr.type).."\n");
 			os.exit(1);
@@ -180,4 +181,5 @@ end
 
 return {
 	shell = start;
+	available = check;
 };

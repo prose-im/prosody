@@ -104,6 +104,7 @@ room_mt.get_occupant_id = occupant_id.get_occupant_id;
 local jid_split = require "prosody.util.jid".split;
 local jid_prep = require "prosody.util.jid".prep;
 local jid_bare = require "prosody.util.jid".bare;
+local jid_resource = require "prosody.util.jid".resource;
 local st = require "prosody.util.stanza";
 local cache = require "prosody.util.cache";
 
@@ -115,6 +116,10 @@ module:add_feature("http://jabber.org/protocol/muc");
 module:depends "muc_unique"
 module:require "muc/hats";
 module:require "muc/lock";
+
+if module:get_option_boolean("muc_vcard", true) ~= false then
+	module:require "muc/vcard";
+end
 
 module:default_permissions("prosody:admin", {
 	":automatic-ownership";
@@ -437,6 +442,13 @@ module:hook("muc-room-pre-create", function(event)
 	end
 end);
 
+local function is_join_presence(stanza)
+	return stanza.name == "presence"
+		and stanza.attr.type == nil
+		and jid_resource(stanza.attr.to) ~= nil
+		and stanza:get_child("x", "http://jabber.org/protocol/muc");
+end
+
 for event_name, method in pairs {
 	-- Normal room interactions
 	["iq-get/bare/http://jabber.org/protocol/disco#info:query"] = "handle_disco_info_get_query" ;
@@ -492,7 +504,7 @@ for event_name, method in pairs {
 				origin.send(st.error_reply(stanza, "modify", "jid-malformed", nil, module.host));
 				return true;
 			end
-			if stanza.attr.type == nil and stanza.name == "presence" and stanza:get_child("x", "http://jabber.org/protocol/muc") then
+			if is_join_presence(stanza) then
 				room = muclib.new_room(room_jid);
 				return room:handle_first_presence(origin, stanza);
 			elseif stanza.attr.type ~= "error" then

@@ -18,6 +18,8 @@ local resolve_relative_path = require"prosody.util.paths".resolve_relative_path;
 local glob_to_pattern = require"prosody.util.paths".glob_to_pattern;
 local path_sep = package.config:sub(1,1);
 local get_traceback_table = require "prosody.util.debug".get_traceback_table;
+local errors = require "prosody.util.error";
+local log = require "prosody.util.logger".init("config");
 
 local encodings = deps.softreq"prosody.util.encodings";
 local nameprep = encodings and encodings.stringprep.nameprep or function (host) return host:lower(); end
@@ -33,6 +35,8 @@ local parser = nil;
 local config_mt = { __index = function (t, _) return rawget(t, "*"); end};
 local config = setmetatable({ ["*"] = { } }, config_mt);
 local files = {};
+local credentials_directory = nil;
+local credential_fallback_fatal = true;
 
 -- When host not found, use global
 local host_mt = { __index = function(_, k) return config["*"][k] end }
@@ -42,7 +46,12 @@ function _M.getconfig()
 end
 
 function _M.get(host, key)
-	return config[host][key];
+	local v = config[host][key];
+	if v and errors.is_error(v) then
+		log("warn", "%s:%d: %s", v.context.filename, v.context.fileline, v.text);
+		return nil;
+	end
+	return v;
 end
 function _M.rawget(host, key)
 	local hostconfig = rawget(config, host);
@@ -218,7 +227,17 @@ do
 								host = env.__currenthost or "*";
 								option_name = k;
 							}, config_option_proxy_mt);
+						elseif val == nil then
+							t_insert(
+								warnings,
+								("%s: %d: unrecognized value: %s (you may be missing quotes around it)"):format(
+									config_file,
+									get_line_number(config_file),
+									k
+								)
+							);
 						end
+
 						return val;
 					end
 
@@ -360,17 +379,17 @@ do
 		env.FileLine = filereader(config_path, "*l");
 		env.FileLines = linereader(config_path);
 
-		if _G.prosody.paths.credentials then
-			env.Credential = filereader(_G.prosody.paths.credentials, "*a");
-		elseif _G.prosody.process_type == "prosody" then
+		if credentials_directory then
+			env.Credential = filereader(credentials_directory, "*a");
+		elseif credential_fallback_fatal then
 			env.Credential = function() error("Credential() requires the $CREDENTIALS_DIRECTORY environment variable to be set", 2) end
 		else
 			env.Credential = function()
-				t_insert(warnings, ("%s:%d: Credential() requires the $CREDENTIALS_DIRECTORY environment variable to be set")
-						:format(config_file, get_line_number(config_file)));
-				return nil;
+				return errors.new({
+						type = "continue";
+						text = "Credential() requires the $CREDENTIALS_DIRECTORY environment variable to be set";
+					}, { filename = config_file; fileline = get_line_number(config_file) });
 			end
-
 		end
 
 		local chunk, err = envload(data, "@"..config_file, env);
@@ -390,6 +409,14 @@ do
 		return true, warnings;
 	end
 
+end
+
+function _M.set_credentials_directory(directory)
+	credentials_directory = directory;
+end
+
+function _M.set_credential_fallback_mode(mode)
+	credential_fallback_fatal = mode == "error";
 end
 
 return _M;

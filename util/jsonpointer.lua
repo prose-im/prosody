@@ -1,5 +1,4 @@
-local m_type = math.type;
-
+-- This file is generated from teal-src/prosody/util/jsonpointer.tl
 local function unescape_token(escaped_token)
 	local unescaped = escaped_token:gsub("~1", "/"):gsub("~0", "~")
 	return unescaped
@@ -17,10 +16,10 @@ local function resolve_json_pointer(ref, path)
 
 		if type(idx) == "string" then
 			new_ref = ref[token]
-		elseif m_type(idx) == "integer" then
+		elseif math.type(idx) == "integer" then
 			local i = tonumber(token)
 			if token == "-" then
-				i = #ref + 1
+				i = #(ref) + 1
 			end
 			new_ref = ref[i + 1]
 		else

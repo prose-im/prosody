@@ -10,6 +10,10 @@ return {
 		"mod_flags";
 		-- mod_cloud_notify bundled
 		"mod_cloud_notify";
+		-- mod_muc has built-in vcard support
+		"muc_vcard";
+		-- mod_http_altconnect bundled
+		"http_altconnect";
 		-- Roles, module.may and per-session authz
 		"permissions";
 		-- prosody.* namespace

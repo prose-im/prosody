@@ -1,13 +1,13 @@
--- This file is generated from teal-src/util/datamapper.lua
-
+-- This file is generated from teal-src/prosody/util/datamapper.tl
 if not math.type then
 	require("prosody.util.mathcompat")
 end
 
 local st = require("prosody.util.stanza");
+local json = require("prosody.util.json")
 local pointer = require("prosody.util.jsonpointer");
 
-local schema_t = {}
+local json_schema_object = require("prosody.util.jsonschema")
 
 local function toboolean(s)
 	if s == "true" or s == "1" then
@@ -31,8 +31,6 @@ local function totype(t, s)
 		return tonumber(s)
 	end
 end
-
-local value_goes = {}
 
 local function resolve_schema(schema, root)
 	if type(schema) == "table" then
@@ -69,8 +67,6 @@ local function unpack_propschema(propschema, propname, current_ns)
 
 	if type(propschema) == "table" then
 		proptype = guess_schema_type(propschema);
-	elseif type(propschema) == "string" then
-		error("schema as string is not supported: " .. propschema .. " {" .. current_ns .. "}" .. propname)
 	end
 
 	if proptype == "object" or proptype == "array" then
@@ -103,7 +99,7 @@ local function unpack_propschema(propschema, propname, current_ns)
 			end
 		end
 		if propschema["const"] then
-			enums = {propschema["const"]}
+			enums = { propschema["const"] }
 		elseif propschema["enum"] then
 			enums = propschema["enum"]
 		end
@@ -137,7 +133,7 @@ local function extract_value(s, value_where, proptype, name, namespace, prefix, 
 	elseif value_where == "in_attribute" then
 		local attr = name
 		if prefix then
-			attr = prefix .. ":" .. name
+			attr = prefix .. ':' .. name
 		elseif namespace and namespace ~= s.attr.xmlns then
 			attr = namespace .. "\1" .. name
 		end
@@ -243,7 +239,7 @@ local function toxmlstring(proptype, v)
 		return v
 	elseif proptype == "number" and type(v) == "number" then
 		return string.format("%g", v)
-	elseif proptype == "integer" and type(v) == "number" then
+	elseif proptype == "integer" and math.type(v) == "integer" then
 		return string.format("%d", v)
 	elseif proptype == "boolean" then
 		return v and "1" or "0"
@@ -252,13 +248,12 @@ end
 
 local unparse
 
-local function unparse_property(out, v, proptype, propschema, value_where, name, namespace, current_ns, prefix,
-	single_attribute, root)
+local function unparse_property(out, v, proptype, propschema, value_where, name, namespace, current_ns, prefix, single_attribute, root)
 
 	if value_where == "in_attribute" then
 		local attr = name
 		if prefix then
-			attr = prefix .. ":" .. name
+			attr = prefix .. ':' .. name
 		elseif namespace and namespace ~= current_ns then
 			attr = namespace .. "\1" .. name
 		end
@@ -280,7 +275,7 @@ local function unparse_property(out, v, proptype, propschema, value_where, name,
 	else
 		local propattr
 		if namespace ~= current_ns then
-			propattr = {xmlns = namespace}
+			propattr = { xmlns = namespace }
 		end
 		if value_where == "in_tag_name" then
 			if proptype == "string" and type(v) == "string" then
@@ -324,7 +319,7 @@ function unparse(schema, t, current_name, current_ns, ctx, root)
 
 	end
 
-	local out = ctx or st.stanza(current_name, {xmlns = current_ns})
+	local out = ctx or st.stanza(current_name, { xmlns = current_ns })
 
 	local s_type = guess_schema_type(schema)
 	if s_type == "object" then
@@ -350,4 +345,4 @@ function unparse(schema, t, current_name, current_ns, ctx, root)
 	end
 end
 
-return {parse = parse; unparse = unparse}
+return { parse = parse; unparse = unparse }

@@ -182,15 +182,30 @@ end
 
 local function service_command_warning(service_command)
 	if prosody.installed and configmanager.get("*", "prosodyctl_service_warnings") ~= false then
-		show_warning("WARNING: Use of prosodyctl start/stop/restart/reload is not recommended");
-		show_warning("         if Prosody is managed by an init system - use that directly instead.");
+		show_warning("ERROR: Use of 'prosodyctl %s' is disabled in this installation because", service_command);
+
 		local init = has_init_system()
-		if init == "systemd" then
-			show_warning("         e.g. systemctl %s prosody", service_command);
-		elseif init == "rc.d" then
-			show_warning("         e.g. /etc/init.d/prosody %s", service_command);
+		if init then
+			show_warning("       we detected that this system uses %s for managing services.", init);
+			show_warning("");
+			show_warning("       To avoid problems, use that directly instead. For example:");
+			show_warning("");
+			if init == "systemd" then
+				show_warning("          systemctl %s prosody", service_command);
+			elseif init == "rc.d" then
+				show_warning("          /etc/init.d/prosody %s", service_command);
+			end
+			show_warning("");
+		else
+			show_warning("       it may conflict with your system's service manager.");
+			show_warning("");
 		end
-		show_warning("");
+
+		show_warning("       Proceeding to use prosodyctl may cause process management issues.");
+		show_warning("       You can pass --force to override this warning, or set");
+		show_warning("       prosodyctl_service_warnings = false in your global config.");
+
+		os.exit(1);
 	end
 end
 
@@ -200,7 +215,9 @@ function commands.start(arg)
 		show_usage([[start]], [[Start Prosody]]);
 		return 0;
 	end
-	service_command_warning("start");
+	if not opts.force then
+		service_command_warning("start");
+	end
 	local ok, ret = prosodyctl.isrunning();
 	if not ok then
 		show_message(error_messages[ret]);
@@ -301,9 +318,15 @@ function commands.stop(arg)
 		return 0;
 	end
 
-	service_command_warning("stop");
+	if not opts.force then
+		service_command_warning("stop");
+	end
 
-	if not prosodyctl.isrunning() then
+	local ok, running = prosodyctl.isrunning();
+	if not ok then
+		show_message(error_messages[running]);
+		return 1;
+	elseif not running then
 		show_message("Prosody is not running");
 		return 1;
 	end
@@ -312,7 +335,7 @@ function commands.stop(arg)
 	if ok then
 		local i=1;
 		while true do
-			local ok, running = prosodyctl.isrunning();
+			local ok, running = prosodyctl.isrunning(); --luacheck: ignore 421
 			if ok and not running then
 				break;
 			elseif i == 5 then
@@ -339,7 +362,9 @@ function commands.restart(arg)
 		return 1;
 	end
 
-	service_command_warning("restart");
+	if not opts.force then
+		service_command_warning("restart");
+	end
 
 	commands.stop(arg);
 	return commands.start(arg);
@@ -502,20 +527,32 @@ function commands.reload(arg)
 		return 0;
 	end
 
-	if arg[1] and arg[1]:match"^mod_" then
-		-- TODO reword the usage text, document
-		local shell = require "prosody.util.prosodyctl.shell";
-		arg[1] = arg[1]:match("^mod_(.*)"); -- strip mod_ prefix
-		table.insert(arg, 1, "module");
-		table.insert(arg, 2, "reload");
-		return shell.shell(arg);
+	local shell = require "prosody.util.prosodyctl.shell";
+	if shell.available() then
+		if arg[1] and arg[1]:match"^mod_" then
+			-- TODO reword the usage text, document
+			arg[1] = arg[1]:match("^mod_(.*)"); -- strip mod_ prefix
+			table.insert(arg, 1, "module");
+			table.insert(arg, 2, "reload");
+			return shell.shell(arg);
+		end
+		return shell.shell({ "config", "reload" });
+	elseif arg[1] then
+		show_message("Admin socket not found - is it enabled and is Prosody running?");
+		return 1;
 	end
 
-	service_command_warning("reload");
-
-	if not prosodyctl.isrunning() then
+	local ok, running = prosodyctl.isrunning();
+	if not ok then
+		show_message(error_messages[running]);
+		return 1;
+	elseif not running then
 		show_message("Prosody is not running");
 		return 1;
+	end
+
+	if not opts.force then
+		service_command_warning("reload");
 	end
 
 	local ok, ret = prosodyctl.reload();

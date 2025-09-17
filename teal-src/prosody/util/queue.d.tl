@@ -18,4 +18,4 @@ local record lib
 
 	new : function<T> (size:integer, allow_wrapping:boolean) : queue<T>
 end
-return lib;
+return lib

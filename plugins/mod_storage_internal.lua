@@ -4,7 +4,7 @@ local array = require "prosody.util.array";
 local datetime = require "prosody.util.datetime";
 local st = require "prosody.util.stanza";
 local now = require "prosody.util.time".now;
-local id = require "prosody.util.id".medium;
+local uuid_v7 = require "prosody.util.uuid".v7;
 local jid_join = require "prosody.util.jid".join;
 local set = require "prosody.util.set";
 local it = require "prosody.util.iterators";
@@ -111,7 +111,7 @@ function archive:append(username, key, value, when, with)
 			module:log("debug", "%s reached or over quota, not adding to store", username);
 			return nil, "quota-limit";
 		end
-		key = id();
+		key = uuid_v7();
 	end
 
 	module:log("debug", "%s has %d items out of %d limit in store %s", username, item_count, archive_item_limit, self.store);
@@ -205,12 +205,11 @@ function archive:find(username, query)
 					return query.start - when;
 				end);
 				i = wi - 1;
-			else
-				iter = it.filter(function(item)
-					local when = item.when or datetime.parse(item.attr.stamp);
-					return when >= query.start;
-				end, iter);
 			end
+			iter = it.filter(function(item)
+				local when = item.when or datetime.parse(item.attr.stamp);
+				return when >= query.start;
+			end, iter);
 		end
 		if query["end"] then
 			if query.reverse then
@@ -221,12 +220,11 @@ function archive:find(username, query)
 				if wi then
 					i = wi + 1;
 				end
-			else
-				iter = it.filter(function(item)
-					local when = item.when or datetime.parse(item.attr.stamp);
-					return when <= query["end"];
-				end, iter);
 			end
+			iter = it.filter(function(item)
+				local when = item.when or datetime.parse(item.attr.stamp);
+				return when <= query["end"];
+			end, iter);
 		end
 		if query.after then
 			local found = false;

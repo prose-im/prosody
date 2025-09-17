@@ -192,7 +192,7 @@ function route_to_existing_session(event)
 
 	-- We have a connection to this host already
 	if host.type == "s2sout_unauthed" and (stanza.name ~= "db:verify" or not host.dialback_key) then
-		(host.log or log)("debug", "trying to send over unauthed s2sout to "..to_host);
+		(host.log or log)("debug", "trying to send over unauthed s2sout to %s", to_host);
 
 		-- Queue stanza until we are able to send it
 		if not host.sendq then
@@ -995,16 +995,23 @@ end
 -- Complete the sentence "Your certificate " with what's wrong
 local function friendly_cert_error(session) --> string
 	if session.cert_chain_status == "invalid" then
-		if type(session.cert_chain_errors) == "table" then
-			local cert_errors = set.new(session.cert_chain_errors[1]);
-			if cert_errors:contains("certificate has expired") then
-				return "has expired";
-			elseif cert_errors:contains("self signed certificate") then
-				return "is self-signed";
-			elseif cert_errors:contains("no matching DANE TLSA records") then
-				return "does not match any DANE TLSA records";
-			end
+		local cert_errors = set.new();
 
+		if type(session.cert_chain_errors) == "table" then
+			cert_errors:add_list(session.cert_chain_errors[1]);
+		elseif type(session.cert_chain_errors) == "string" then
+			cert_errors:add(session.cert_chain_errors);
+		end
+
+		if cert_errors:contains("certificate has expired") then
+			return "has expired";
+		elseif cert_errors:contains("self signed certificate") or cert_errors:contains("self-signed certificate") then
+			return "is self-signed";
+		elseif cert_errors:contains("no matching DANE TLSA records") then
+			return "does not match any DANE TLSA records";
+		end
+
+		if type(session.cert_chain_errors) == "table" then
 			local chain_errors = set.new(session.cert_chain_errors[2]);
 			for i, e in pairs(session.cert_chain_errors) do
 				if i > 2 then chain_errors:add_list(e); end
@@ -1015,7 +1022,6 @@ local function friendly_cert_error(session) --> string
 				return "does not match any DANE TLSA records";
 			end
 		end
-		-- TODO cert_chain_errors can be a string, handle that
 		return "is not trusted"; -- for some other reason
 	elseif session.cert_identity_status == "invalid" then
 		return "is not valid for this name";
@@ -1097,6 +1103,10 @@ module:provides("net", {
 		-- FIXME This only applies to Direct TLS, which we don't use yet.
 		-- This gets applied for real in mod_tls
 		verify = { "peer", "client_once", };
+		verifyext = {
+			"lsec_continue", -- Continue past certificate verification errors
+			"lsec_ignore_purpose", -- Validate client certificates as if they were server certificates
+		};
 	};
 	multiplex = {
 		protocol = "xmpp-server";
@@ -1111,6 +1121,10 @@ module:provides("net", {
 	encryption = "ssl";
 	ssl_config = {
 		verify = { "peer", "client_once", };
+		verifyext = {
+			"lsec_continue", -- Continue past certificate verification errors
+			"lsec_ignore_purpose", -- Validate client certificates as if they were server certificates
+		};
 	};
 	multiplex = {
 		protocol = "xmpp-server";

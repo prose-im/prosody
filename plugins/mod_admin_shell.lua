@@ -19,6 +19,7 @@ local it = require "prosody.util.iterators";
 local server = require "prosody.net.server";
 local schema = require "prosody.util.jsonschema";
 local st = require "prosody.util.stanza";
+local parse_args = require "prosody.util.argparse".parse;
 
 local _G = _G;
 
@@ -91,13 +92,8 @@ end
 -- Seed with default sections and their description text
 help_topic "console" "Help regarding the console itself" [[
 Hey! Welcome to Prosody's admin console.
-First thing, if you're ever wondering how to get out, simply type 'quit'.
-Secondly, note that we don't support the full telnet protocol yet (it's coming)
-so you may have trouble using the arrow keys, etc. depending on your system.
-
-For now we offer a couple of handy shortcuts:
-!! - Repeat the last command
-!old!new! - repeat the last command, but with 'old' replaced by 'new'
+If you're ever wondering how to get out, simply type 'quit' (ctrl+d should also
+work).
 
 For those well-versed in Prosody's internals, or taking instruction from those who are,
 you can prefix a command with > to escape the console sandbox, and access everything in
@@ -141,7 +137,9 @@ Built-in roles are:
   prosody:registered - Registered user
   prosody:member     - Provisioned user
   prosody:admin      - Host administrator
-  prosody:operator - Server administrator
+  prosody:operator   - Server administrator
+
+To view roles and policies, see the commands in 'help role'.
 
 Roles can be assigned using the user management commands (see 'help user').
 ]];
@@ -209,7 +207,13 @@ module:hook("admin/repl-requested-input", function (event)
 		event.origin.send(st.stanza("repl-result", { type = "error" }):text("Internal error - unexpected input"));
 		return true;
 	end
-	input_promise.resolve(event.stanza:get_text());
+	local status = event.stanza.attr.status or "submit";
+	local text = event.stanza:get_text();
+	if status == "submit" then
+		input_promise.resolve(text);
+	else
+		input_promise.reject(status == "cancel" and (text ~= "" and text)  or "cancelled");
+	end
 	return true;
 end);
 
@@ -255,6 +259,83 @@ function console:new_session(admin_session)
 	return session;
 end
 
+local function process_cmd_line(session, arg_line)
+	local chunk = load("return "..arg_line, "=shell", "t", {});
+	local ok, args = pcall(chunk);
+	if not ok then return nil, args; end
+
+	local section_name, command = args[1], args[2];
+
+	local section_mt = getmetatable(def_env[section_name]);
+	local section_help = section_mt and section_mt.help;
+	local command_help = section_help and section_help.commands[command];
+
+	if not command_help then
+		if commands[section_name] then
+			commands[section_name](session, table.concat(args, " "));
+			return;
+		end
+		if section_help then
+			return nil, "Command not found or necessary module not loaded. Try 'help "..section_name.." for a list of available commands.";
+		end
+		return nil, "Command not found. Is the necessary module loaded?";
+	end
+
+	local fmt = { "%s"; ":%s("; ")" };
+
+	if command_help.flags then
+		local flags, flags_err, flags_err_extra = parse_args(args, command_help.flags);
+		if not flags then
+			if flags_err == "missing-value" then
+				return nil, "Expected value after "..flags_err_extra;
+			elseif flags_err == "param-not-found" then
+				return nil, "Unknown parameter: "..flags_err_extra;
+			end
+			return nil, flags_err;
+		end
+
+		table.remove(flags, 2);
+		table.remove(flags, 1);
+
+		local n_fixed_args = #command_help.args;
+
+		local arg_str = {};
+		for i = 1, n_fixed_args do
+			if flags[i] ~= nil then
+				table.insert(arg_str, ("%q"):format(flags[i]));
+			else
+				table.insert(arg_str, "nil");
+			end
+		end
+
+		table.insert(arg_str, "flags");
+
+		for i = n_fixed_args + 1, #flags do
+			if flags[i] ~= nil then
+				table.insert(arg_str, ("%q"):format(flags[i]));
+			else
+				table.insert(arg_str, "nil");
+			end
+		end
+
+		table.insert(fmt, 3, "%s");
+
+		return "local flags = ...; return "..string.format(table.concat(fmt), section_name, command, table.concat(arg_str, ", ")), flags;
+	end
+
+	for i = 3, #args do
+		if args[i]:sub(1, 1) == ":" then
+			table.insert(fmt, i, ")%s(");
+		elseif i > 3 and fmt[i - 1]:match("%%q$") then
+			table.insert(fmt, i, ", %q");
+		else
+			table.insert(fmt, i, "%q");
+		end
+	end
+
+	return "return "..string.format(table.concat(fmt), table.unpack(args));
+end
+
 local function handle_line(event)
 	local session = event.origin.shell_session;
 	if not session then
@@ -268,6 +349,8 @@ local function handle_line(event)
 
 	local line = event.stanza:get_text();
 	local useglobalenv;
+
+	session.repl = event.stanza.attr.repl ~= "0";
 
 	local result = st.stanza("repl-result");
 
@@ -295,23 +378,6 @@ local function handle_line(event)
 		session.globalenv = redirect_output(_G, session);
 	end
 
-	local chunkname = "=console";
-	local env = (useglobalenv and session.globalenv) or session.env or nil
-	-- luacheck: ignore 311/err
-	local chunk, err = envload("return "..line, chunkname, env);
-	if not chunk then
-		chunk, err = envload(line, chunkname, env);
-		if not chunk then
-			err = err:gsub("^%[string .-%]:%d+: ", "");
-			err = err:gsub("^:%d+: ", "");
-			err = err:gsub("'<eof>'", "the end of the line");
-			result.attr.type = "error";
-			result:text("Sorry, I couldn't understand that... "..err);
-			event.origin.send(result);
-			return;
-		end
-	end
-
 	local function send_result(taskok, message)
 		if not message then
 			if type(taskok) ~= "string" and useglobalenv then
@@ -328,7 +394,45 @@ local function handle_line(event)
 		event.origin.send(result);
 	end
 
-	local taskok, message = chunk();
+	local taskok, message;
+	local env = (useglobalenv and session.globalenv) or session.env or nil;
+	local flags;
+
+	local source;
+	if line:match("^{") then
+		-- Input is a serialized array of strings, typically from
+		-- a command-line invocation of 'prosodyctl shell something'
+		source, flags = process_cmd_line(session, line);
+		if not source then
+			if flags then -- err
+				send_result(false, flags);
+			else -- no err, but nothing more to do
+				-- This happens if it was a "simple" command
+				event.origin.send(result);
+			end
+			return;
+		end
+	end
+
+	local chunkname = "=console";
+	-- luacheck: ignore 311/err
+	local chunk, err = envload(source or ("return "..line), chunkname, env);
+	if not chunk then
+		if not source then
+			chunk, err = envload(line, chunkname, env);
+		end
+		if not chunk then
+			err = err:gsub("^%[string .-%]:%d+: ", "");
+			err = err:gsub("^:%d+: ", "");
+			err = err:gsub("'<eof>'", "the end of the line");
+			result.attr.type = "error";
+			result:text("Sorry, I couldn't understand that... "..err);
+			event.origin.send(result);
+			return;
+		end
+	end
+
+	taskok, message = chunk(flags);
 
 	if promise.is_promise(taskok) then
 		taskok:next(function (resolved_message)
@@ -349,7 +453,7 @@ module:hook("admin/repl-input", function (event)
 	return true;
 end);
 
-local function describe_command(s)
+local function describe_command(s, hidden)
 	local section, name, args, desc = s:match("^([%w_]+):([%w_]+)%(([^)]*)%) %- (.+)$");
 	if not section then
 		error("Failed to parse command description: "..s);
@@ -360,7 +464,12 @@ local function describe_command(s)
 		args = array.collect(args:gmatch("[%w_]+")):map(function (arg_name)
 			return { name = arg_name };
 		end);
+		hidden = hidden;
 	};
+end
+
+local function hidden_command(s)
+	return describe_command(s, true);
 end
 
 -- Console commands --
@@ -455,10 +564,46 @@ def_env.help = setmetatable({}, {
 				end
 
 				for command, command_help in it.sorted_pairs(section_help.commands or {}) do
-					c = c + 1;
-					local args = command_help.args:pluck("name"):concat(", ");
-					local desc = command_help.desc or command_help.module and ("Provided by mod_"..command_help.module) or "";
-					print(("%s:%s(%s) - %s"):format(section_name, command, args, desc));
+					if not command_help.hidden then
+						c = c + 1;
+						local desc = command_help.desc or command_help.module and ("Provided by mod_"..command_help.module) or "";
+						if self.session.repl then
+							local args = array.pluck(command_help.args, "name"):concat(", ");
+							print(("%s:%s(%s) - %s"):format(section_name, command, args, desc));
+						else
+							local args = array.pluck(command_help.args, "name"):concat("> <");
+							if args ~= "" then
+								args = "<"..args..">";
+							end
+							print(("%s %s %s"):format(section_name, command, args));
+							print(("    %s"):format(desc));
+							if command_help.flags then
+								local flags = command_help.flags;
+								print("");
+								print(("    Flags:"));
+
+								if flags.kv_params then
+									for name in it.sorted_pairs(flags.kv_params) do
+										print("      --"..name:gsub("_", "-"));
+									end
+								end
+
+								if flags.value_params then
+									for name in it.sorted_pairs(flags.value_params) do
+										print("      --"..name:gsub("_", "-").." <"..name..">");
+									end
+								end
+
+								if flags.array_params then
+									for name in it.sorted_pairs(flags.array_params) do
+										print("      --"..name:gsub("_", "-").." <"..name..">, ...");
+									end
+								end
+
+							end
+							print("");
+						end
+					end
 				end
 			elseif help_topics[section_name] then
 				local topic = help_topics[section_name];
@@ -1442,7 +1587,7 @@ function def_env.s2s:close(from, to, text, condition)
 
 	for _, session in pairs(s2s_sessions) do
 		local id = session.id or (session.type .. tostring(session):match("[a-f0-9]+$"));
-		if (match_id and match_id == id) or ((from and match_wildcard(from, session.to_host)) or (to and match_wildcard(to, session.to_host))) then
+		if (match_id and match_id == id) or ((from and match_wildcard(from, session.from_host)) and (to and match_wildcard(to, session.to_host))) then
 			print(("Closing connection from %s to %s [%s]"):format(session.from_host, session.to_host, id));
 			(session.close or s2smanager.destroy_session)(session, build_reason(text, condition));
 			count = count + 1;
@@ -1800,9 +1945,8 @@ function def_env.user:password(jid, password)
 	end);
 end
 
-describe_command [[user:roles(jid, host) - Show current roles for an user]]
+describe_command [[user:role(jid, host) - Show primary role for a user]]
 function def_env.user:role(jid, host)
-	local print = self.session.print;
 	local username, userhost = jid_split(jid);
 	if host == nil then host = userhost; end
 	if not prosody.hosts[host] then
@@ -1814,22 +1958,27 @@ function def_env.user:role(jid, host)
 	local primary_role = um.get_user_role(username, host);
 	local secondary_roles = um.get_user_secondary_roles(username, host);
 
+	local primary_role_desc = primary_role and primary_role.name or "<none>";
+
 	print(primary_role and primary_role.name or "<none>");
 
-	local count = primary_role and 1 or 0;
+	local n_secondary = 0;
 	for role_name in pairs(secondary_roles or {}) do
-		count = count + 1;
+		n_secondary = n_secondary + 1;
 		print(role_name.." (secondary)");
 	end
 
-	return true, count == 1 and "1 role" or count.." roles";
+	if n_secondary > 0 then
+		return true, primary_role_desc.." (primary)";
+	end
+	return true, primary_role_desc;
 end
 def_env.user.roles = def_env.user.role;
 
-describe_command [[user:setrole(jid, host, role) - Set primary role of a user (see 'help roles')]]
--- user:setrole("someone@example.com", "example.com", "prosody:admin")
--- user:setrole("someone@example.com", "prosody:admin")
-function def_env.user:setrole(jid, host, new_role)
+describe_command [[user:set_role(jid, host, role) - Set primary role of a user (see 'help roles')]]
+-- user:set_role("someone@example.com", "example.com", "prosody:admin")
+-- user:set_role("someone@example.com", "prosody:admin")
+function def_env.user:set_role(jid, host, new_role)
 	local username, userhost = jid_split(jid);
 	if new_role == nil then host, new_role = userhost, host; end
 	if not prosody.hosts[host] then
@@ -1844,7 +1993,7 @@ function def_env.user:setrole(jid, host, new_role)
 	end
 end
 
-describe_command [[user:addrole(jid, host, role) - Add a secondary role to a user]]
+hidden_command [[user:addrole(jid, host, role) - Add a secondary role to a user]]
 function def_env.user:addrole(jid, host, new_role)
 	local username, userhost = jid_split(jid);
 	if new_role == nil then host, new_role = userhost, host; end
@@ -1855,10 +2004,14 @@ function def_env.user:addrole(jid, host, new_role)
 	elseif userhost ~= host then
 		return nil, "Can't add roles outside users own host"
 	end
-	return um.add_user_secondary_role(username, host, new_role);
+	local role, err = um.add_user_secondary_role(username, host, new_role);
+	if not role then
+		return nil, err;
+	end
+	return true, "Role added";
 end
 
-describe_command [[user:delrole(jid, host, role) - Remove a secondary role from a user]]
+hidden_command [[user:delrole(jid, host, role) - Remove a secondary role from a user]]
 function def_env.user:delrole(jid, host, role_name)
 	local username, userhost = jid_split(jid);
 	if role_name == nil then host, role_name = userhost, host; end
@@ -1869,7 +2022,11 @@ function def_env.user:delrole(jid, host, role_name)
 	elseif userhost ~= host then
 		return nil, "Can't remove roles outside users own host"
 	end
-	return um.remove_user_secondary_role(username, host, role_name);
+	local ok, err = um.remove_user_secondary_role(username, host, role_name);
+	if not ok then
+		return nil, err;
+	end
+	return true, "Role removed";
 end
 
 describe_command [[user:list(hostname, pattern) - List users on the specified host, optionally filtering with a pattern]]
@@ -2244,6 +2401,121 @@ function def_env.debug:async(runner_id)
 		});
 	end
 	return true, ("%d runners pending"):format(c);
+end
+
+describe_command [[debug:cert_index([path]) - Show Prosody's view of a directory of certs]]
+function def_env.debug:cert_index(path)
+	local print = self.session.print;
+	local cm = require "core.certmanager";
+
+	path = path or module:get_option("certificates", "certs");
+
+	local sink = logger.add_simple_sink(function (source, level, message)
+		if source == "certmanager" then
+			if level == "debug" or level == "info" then
+				level = "II";
+			elseif level == "warn" or level == "error" then
+				level = "EE";
+			end
+			self.session.print(level..": "..message);
+		end
+	end);
+
+	print("II: Scanning "..path.."...");
+
+	local index = {};
+	cm.index_certs(path, index)
+
+	if not logger.remove_sink(sink) then
+		module:log("warn", "Unable to remove log sink");
+	end
+
+	local c, max_domain = 0, 8;
+	for domain in pairs(index) do
+		if #domain > max_domain then
+			max_domain = #domain;
+		end
+	end
+
+	print("");
+
+	local row = format_table({
+		{ title = "Domain", width = max_domain };
+		{ title = "Certificate", width = "100%" };
+		{ title = "Service", width = 5 };
+	}, self.session.width);
+	print(row());
+	print(("-"):rep(self.session.width or 80));
+	for domain, certs in it.sorted_pairs(index) do
+		for cert_file, services in it.sorted_pairs(certs) do
+			for service in it.sorted_pairs(services) do
+				c = c + 1;
+				print(row({ domain, cert_file, service }));
+			end
+		end
+	end
+
+	print("");
+
+	return true, ("Showing %d certificates in %s"):format(c, path);
+end
+
+def_env.role = new_section("Role and access management");
+
+describe_command [[role:list(host) - List known roles]]
+function def_env.role:list(host)
+	if not host then
+		return nil, "Specify which host to list roles for";
+	end
+	local role_list = {};
+	for _, role in it.sorted_pairs(um.get_all_roles(host)) do
+		table.insert(role_list, role);
+	end
+	table.sort(role_list, function (a, b)
+		if a.priority ~= b.priority then
+			return (a.priority or 0) > (b.priority or 0);
+		end
+		return a.name < b.name;
+	end);
+	for _, role in ipairs(role_list) do
+		self.session.print(role.name);
+	end
+	return true, ("Showing %d roles on %s"):format(#role_list, host);
+end
+
+describe_command [[role:show(host, role_name) - Show information about a role]]
+function def_env.role:show(host, role_name)
+	if not host or not role_name then
+		return nil, "Specify the host and role to show";
+	end
+
+	local print = self.session.print;
+	local role = um.get_role_by_name(role_name, host);
+
+	if not role then
+		return nil, ("Unable to find role %s on host %s"):format(role_name, host);
+	end
+
+	local inherits = {};
+	for _, inherited_role in ipairs(role.inherits or {}) do
+		table.insert(inherits, inherited_role.name);
+	end
+
+	local permissions = {};
+	for permission, is_allowed in role:policies() do
+		permissions[permission] = is_allowed and "allowed" or "denied";
+	end
+
+	print("Name:    ", role.name);
+	print("Inherits:", table.concat(inherits, ", "));
+	print("Policies:");
+	local c = 0;
+	for permission, policy in it.sorted_pairs(permissions) do
+		c = c + 1;
+		print("  ["..(policy == "allowed" and "+" or " ").."] " .. permission);
+	end
+	print("");
+	return true, ("Showing role %s with %d policies"):format(role.name, c);
 end
 
 def_env.stats = new_section("Commands to show internal statistics");
@@ -2622,10 +2894,20 @@ local function new_item_handlers(command_host)
 			section_mt.help = section_help;
 		end
 
+		if command.flags then
+			if command.flags.stop_on_positional == nil then
+				command.flags.stop_on_positional = false;
+			end
+			if command.flags.strict == nil then
+				command.flags.strict = true;
+			end
+		end
+
 		section_help.commands[command.name] = {
 			desc = command.desc;
 			full = command.help;
 			args = array(command.args);
+			flags = command.flags;
 			module = command._provided_by;
 		};
 

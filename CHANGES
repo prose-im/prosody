@@ -1,12 +1,28 @@
 TRUNK
 =====
 
+13.0.0
+======
+
+**2025-03-13**
+
 ## New
+
+## Modules
+
+- mod_account_activity
+- mod_cloud_notify
+- mod_flags
+- mod_http_altconnect
+- mod_s2s_auth_dane_in
+- mod_server_info
 
 ### Administration
 
 - Add 'watch log' command to follow live debug logs at runtime (even if disabled)
 - mod_announce: Add shell commands to send messages to all users, online users, or limited by roles
+- New mod_account_activity plugin records last login/logout time of a user account
+- New 'prosodyctl check features' recommends configuration improvements
 
 ### Networking
 
@@ -30,6 +46,7 @@ TRUNK
     - muc_room_allow_public = false restricts to admins
 - Commands to show occupants and affiliations in the Shell
 - Save 'reason' text supplied with affiliation change
+- Owners can set MUC avatars (functionality previously in community module mod_vcard_muc)
 
 ### Security and authentication
 
@@ -40,12 +57,14 @@ TRUNK
 - Ability to disable and enable user accounts
 - Full DANE support for s2s
 - A "grace period" is now supported for deletion requests via in-band registration
+- No longer check certificate Common Names per RFC 9525
 
 ### Storage
 
 - New 'keyval+' combined keyval/map store type
 - Performance improvements in internal archive stores
 - Ability to use SQLite3 storage using LuaSQLite3 instead of LuaDBI
+- SQLCipher support
 
 ### Module API
 
@@ -55,6 +74,7 @@ TRUNK
 - Method for retrieving integer settings from config
 - It is now easy for modules to expose a Prosody shell command, by adding a shell-command item
 - Modules can now implement a module.ready method which will be called after server initialization
+- module:depends() now accepts a second parameter 'soft' to enable soft dependencies
 
 ### Configuration
 
@@ -76,6 +96,8 @@ TRUNK
 - Support for the roster *group* access_model in mod_pep
 - Support for systemd socket activation in server_epoll
 - mod_invites_adhoc gained a command for creating password resets
+- mod_cloud_notify imported from community modules for push notification support
+- mod_http_altconnect imported from community modules, simplifying web clients
 
 ## Removed
 
