@@ -733,7 +733,6 @@ function startup.write_pidfile()
 			prosody.pidfile_handle = nil;
 			os.exit(1);
 		else
-			lfs.unlock(pidfile_handle);
 			pidfile_handle:close();
 			pidfile_handle, err = io.open(pidfile, "w+");
 			if not pidfile_handle then
@@ -743,7 +742,6 @@ function startup.write_pidfile()
 				if lfs.lock(pidfile_handle, "w") then
 					pidfile_handle:write(tostring(pposix.getpid()));
 					pidfile_handle:flush();
-					lfs.unlock(pidfile_handle);
 					prosody.pidfile_handle = pidfile_handle;
 				end
 			end
