@@ -82,8 +82,19 @@ function create_account(account_username, additional_data, ttl) --luacheck: igno
 end
 
 -- Create invitation to reset the password for an account
-function create_account_reset(account_username, ttl) --luacheck: ignore 131/create_account_reset
-	return create_account(account_username, { allow_reset = account_username }, ttl or 86400);
+function create_account_reset(account_username, additional_data, ttl) --luacheck: ignore 131/create_account_reset
+	-- COMPAT: create_account_reset used to take only (account_username, ttl)
+	--   as parameters. This does the backward-compatible mapping.
+	if type(additional_data) ~= "table" then
+		ttl = additional_data;
+		additional_data = {};
+	end
+
+	-- NOTE: This edits the table in-place. If unwanted,
+	--   clone the table before passing as argument.
+	additional_data.allow_reset = account_username;
+
+	return create_account(account_username, additional_data, ttl or 86400);
 end
 
 -- Create invitation to become a contact of a local user
